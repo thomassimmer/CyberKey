@@ -25,4 +25,3 @@ pub enum ConfigError {
     /// No entry matched the requested label.
     EntryNotFound,
 }
-
