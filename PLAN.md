@@ -441,64 +441,208 @@ opt-level = "s"   # optimize for size on embedded targets
 
 ---
 
-### Step 3 — `cyberkey-core`: TOTP Engine + Config Schema
+### Step 3 — `cyberkey-core`: TOTP Engine + Config Schema *(est. 1–2 h)*
 
-`no_std` crate. Fully testable with `cargo test` on desktop.
+`no_std` crate (compiled without `std` in production; tests run natively on desktop via
+`cargo test`). No heap allocator required — all data lives on the stack via `heapless`.
+
+**Why not `totp-rs`**: `totp-rs` ≥ v5 internally uses `Vec<u8>` and `String` (both
+heap-allocated), making it incompatible with a true `no_std`/no-alloc crate. The feature
+flag `sha1` mentioned in some notes does not exist in v5 — SHA-1 is always a plain
+dependency, not a feature gate. TOTP is ~40 lines of code (HMAC-SHA1 + dynamic
+truncation + base32 decode), so we implement it directly on top of the RustCrypto
+primitives.
 
 Key dependencies:
 
 ```toml
 [dependencies]
-totp-rs  = { version = "5", default-features = false, features = ["sha1"] }
-heapless = "0.8"   # stack-allocated Vec/String, no allocator needed
+hmac     = { version = "0.12", default-features = false }  # no_std HMAC (RustCrypto)
+sha1     = { version = "0.10", default-features = false }  # no_std SHA-1 (RustCrypto)
+heapless = "0.8"   # stack-allocated Vec/String — no allocator required
+# Note: heapless 0.9.x bumped MSRV to 1.87, which is too new for the ESP-IDF toolchain.
+# Stick with 0.8 until the toolchain catches up.
 ```
 
-Public API surface:
+`lib.rs` gate (allows `cargo test` to run on desktop without a panic handler stub):
 
 ```rust
-// Represents a configured service entry
-pub struct TotpEntry {
-    pub finger_id:    u8,          // 0–9, auto-assigned slot; opaque to the user
-    pub label:        String<32>,  // e.g. "GitHub", "AWS"
-    pub secret_b32:   String<64>,  // base32-encoded TOTP secret
+// Compiled as no_std in production; the test harness re-enables std automatically.
+#![cfg_attr(not(test), no_std)]
+```
+
+**Module breakdown**:
+
+| File | Contents |
+|---|---|
+| `error.rs` | `TotpError`, `ConfigError` |
+| `config.rs` | `TotpEntry` + `TotpEntry::new` constructor, `CyberKeyConfig` + all methods |
+| `totp.rs` | `generate_totp`, inline `base32_decode` |
+
+---
+
+**`error.rs`** — all error variants, concrete and locked in by tests:
+
+```rust
+#[derive(Debug, Clone, PartialEq)]
+pub enum TotpError {
+    /// secret_b32 contains a character outside the RFC 4648 base32 alphabet.
+    InvalidBase32,
+    /// Input exceeds 64 base32 characters — the decoded secret would overflow the
+    /// 40-byte on-stack buffer.
+    SecretTooLong,
 }
 
-// In-memory config — capped at 10 entries by design (one per finger), not by hardware
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigError {
+    /// The config already holds 10 entries and cannot accept another.
+    Full,
+    /// Another entry already claims this finger_id; use remove_by_label first.
+    DuplicateFingerSlot,
+    /// The provided label exceeds 32 characters. The caller must truncate it.
+    LabelTooLong,
+    /// The provided secret_b32 exceeds 64 characters.
+    SecretTooLong,
+    /// No entry matched the requested label.
+    EntryNotFound,
+}
+```
+
+---
+
+**`config.rs`** — schema + methods:
+
+```rust
+pub struct TotpEntry {
+    pub finger_id:  u8,          // 0–9, fingerprint sensor slot
+    pub label:      String<32>,  // e.g. "GitHub", "AWS"
+    pub secret_b32: String<64>,  // base32-encoded TOTP secret (stored undecoded)
+}
+```
+
+`TotpEntry::new(finger_id, label: &str, secret_b32: &str) -> Result<TotpEntry, ConfigError>`
+— convenience constructor that validates lengths and converts to `heapless::String`.
+
+```rust
 pub struct CyberKeyConfig {
     pub entries: heapless::Vec<TotpEntry, 10>,
 }
+```
 
-// Core function: derive a 6-digit TOTP code
-// secret_b32 : base32 key (e.g. "JBSWY3DPEHPK3PXP")
-// timestamp  : Unix timestamp in seconds
+`CyberKeyConfig` methods:
+
+| Method | Description |
+|---|---|
+| `new() -> Self` | Returns an empty config |
+| `add_entry(entry) -> Result<(), ConfigError>` | Validates uniqueness + capacity, then pushes |
+| `remove_by_label(label) -> Result<(), ConfigError>` | Order-preserving removal of first label match |
+| `find_by_finger_id(id) -> Option<&TotpEntry>` | Linear scan (n ≤ 10, constant in practice) |
+| `iter() -> impl Iterator<Item = &TotpEntry>` | Insertion-order iteration |
+
+**Behavioural decisions** (locked in by tests, not open questions):
+
+- **Duplicate `finger_id`** → `Err(ConfigError::DuplicateFingerSlot)`. A slot
+  reassignment must be an explicit `remove_by_label` + `add_entry`; silent overwrite is
+  never acceptable on a security device.
+- **Label > 32 chars** → `Err(ConfigError::LabelTooLong)`. The CLI layer is responsible
+  for truncating before calling; the core never silently drops characters.
+- **Secret > 64 chars** → `Err(ConfigError::SecretTooLong)`.
+
+---
+
+**`totp.rs`** — the algorithm:
+
+TOTP (RFC 6238 / RFC 4226) in three steps:
+1. Base32-decode `secret_b32` into a fixed `[u8; 40]` stack buffer
+   (max 64 base32 input chars → max 40 raw bytes).
+2. HMAC-SHA1 over the 8-byte big-endian HOTP counter `T = floor(timestamp / 30)`.
+3. Dynamic truncation: `offset = mac[19] & 0x0f`;
+   `code = u32::from_be_bytes([mac[o]&0x7f, mac[o+1], mac[o+2], mac[o+3]]) % 1_000_000`.
+
+```rust
+// Core function: derive a 6-digit TOTP code.
+// secret_b32 : base32-encoded key, e.g. "JBSWY3DPEHPK3PXP" (case-insensitive)
+// timestamp  : Unix timestamp in seconds (from RTC or USB clock sync)
 pub fn generate_totp(secret_b32: &str, timestamp: u64) -> Result<u32, TotpError>;
 ```
 
-Unit tests validate against known TOTP vectors (RFC 6238):
+---
+
+Unit tests — all behaviours pinned before firmware integration:
 
 ```rust
+// "JBSWY3DPEHPK3PXP" decodes to b"Hello!\xDE\xAD\xBE\xEF" (10 raw bytes).
+// counter = floor(59 / 30) = 1. Correct 6-digit TOTP for this key/counter pair: 996554.
 #[test]
-fn totp_known_vector() {
-    // secret "JBSWY3DPEHPK3PXP" at t=59 must produce 287082
-    assert_eq!(generate_totp("JBSWY3DPEHPK3PXP", 59).unwrap(), 287082);
+fn totp_known_vector_t59() {
+    assert_eq!(generate_totp("JBSWY3DPEHPK3PXP", 59).unwrap(), 996554);
 }
+
+// RFC 6238 Appendix B uses key "12345678901234567890" (base32: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ").
+// At t=59 the RFC mandates an 8-digit code of 94287082; our 6-digit output = 94287082 % 10^6 = 287082.
+#[test]
+fn totp_rfc6238_vector_t59() {
+    assert_eq!(
+        generate_totp("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", 59).unwrap(),
+        287082,
+    );
+}
+
+// All timestamps in the same 30-second window must yield the same code.
+// Window 2 spans [60, 89]; window 3 spans [90, 119] — must differ.
+#[test]
+fn totp_window_stability() { ... }
+
+// Lower-case secrets must produce identical codes to upper-case (RFC 4648 is
+// case-insensitive; authenticator apps emit uppercase but some tools use lowercase).
+#[test]
+fn totp_case_insensitive_secret() { ... }
+
+// RFC 4648 padding ('=') must be silently ignored — result identical to unpadded form.
+#[test]
+fn totp_padding_ignored() {
+    // "JBSWY3DPEHPK3PXP======" must give the same 996554 as the unpadded form.
+    assert_eq!(generate_totp("JBSWY3DPEHPK3PXP======", 59).unwrap(), 996554);
+}
+
+// Characters outside A-Z and 2-7 must be rejected immediately.
+#[test]
+fn totp_invalid_base32_returns_err() {
+    assert_eq!(generate_totp("!!!INVALID!!!", 59), Err(TotpError::InvalidBase32));
+}
+
+// '0' and '1' are not in the base32 alphabet (often confused with 'O' and 'I').
+#[test]
+fn totp_digit_zero_and_one_are_invalid() { ... }
+
+// 65 base32 characters → exceeds 64-char limit → SecretTooLong (buffer-overflow guard).
+#[test]
+fn totp_secret_too_long_returns_err() { ... }
+
+// 64 base32 characters decode to exactly 40 bytes — must succeed without error.
+#[test]
+fn totp_exactly_64_char_secret_accepted() { ... }
+
+// Pushing an 11th entry must fail — never silently drop data.
+#[test]
+fn config_capacity_at_limit() { ... }
+
+// Two entries with the same finger_id must be rejected.
+#[test]
+fn config_duplicate_finger_slot_rejected() { ... }
+
+// 32-char label accepted; 33-char label returns LabelTooLong.
+#[test]
+fn config_label_boundary() { ... }
+
+// remove_by_label happy path + EntryNotFound on second attempt.
+#[test]
+fn config_remove_by_label() { ... }
+
+// find_by_finger_id returns Some for known id, None for unknown.
+#[test]
+fn config_find_by_finger_id() { ... }
 ```
-
-Additional test cases to implement:
-
-- **Multiple RFC 6238 time steps**: validate `generate_totp` against several timestamp
-  values from RFC 6238 Appendix B to confirm correct 30-second window arithmetic
-  (t = 59, 1111111109, 1234567890, 2000000000).
-- **Invalid base32 input**: `generate_totp("!!!INVALID!!!", 59)` must return
-  `Err(TotpError::…)` — guards against corrupt NVS data reaching the TOTP engine.
-- **`CyberKeyConfig` capacity**: pushing an 11th entry into a config bounded at 10 must
-  fail — the `heapless::Vec` capacity constraint should be exercised explicitly, since
-  a silent overflow would silently drop entries on device.
-- **Duplicate `finger_id`**: whether two entries with the same `finger_id` are rejected
-  or silently overwritten is a behavioural decision; a test should lock in the chosen
-  semantics before the firmware integration.
-- **Label boundary**: a label of exactly 32 characters must be accepted; 33 characters
-  must either truncate or be rejected — behaviour to be decided and pinned by a test.
 
 ---
 
