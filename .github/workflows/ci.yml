@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**/README.md"
+      - "docs/**"
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Enable caching
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests (portable crates only)
+        run: |
+          cargo test --package cyberkey-core
+          cargo test --package fingerprint2-rs
+          cargo test --package cyberkey-cli
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Enable caching
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Clippy (portable crates only)
+        run: |
+          cargo clippy --package cyberkey-core -- -D warnings
+          cargo clippy --package fingerprint2-rs -- -D warnings
+          cargo clippy --package cyberkey-cli -- -D warnings
+
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check

@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "crates/cyberkey-core",
+    "crates/fingerprint2-rs",
+    "crates/cyberkey-cli",
+    "firmware",
+]
+resolver = "2"
+
+[profile.release]
+opt-level = "s"   # optimize for size on embedded targets

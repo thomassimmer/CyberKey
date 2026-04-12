@@ -384,9 +384,10 @@ cargo install espup --locked
 
 # Download and install the Xtensa toolchain
 espup install
-# Generates ~/.espup/export-esp.sh
+# Generates ~/export-esp.sh
 
 # Source environment variables (add to ~/.zshrc or ~/.bashrc)
+mv ~/export-esp.sh ~/.espup/export-esp.sh
 . ~/.espup/export-esp.sh
 
 # Flashing and monitoring tools
@@ -402,10 +403,6 @@ cargo install ldproxy --locked
 # System dependencies (macOS)
 brew install cmake ninja python3
 ```
-
-> **Known issue on macOS**: `espup install` may fail with `"failed to iterate over archive"`.
-> Workaround: retry with `espup install --verbose`. See
-> [espup#468](https://github.com/esp-rs/espup/issues/468).
 
 ---
 

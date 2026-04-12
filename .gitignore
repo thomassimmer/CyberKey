@@ -1,0 +1,29 @@
+# ─── Rust ────────────────────────────────────────────────────────────────────
+/target
+
+# Cargo.lock is committed at workspace level (contains binary crates)
+# Each sub-crate's own .gitignore handles its local /target
+
+# ─── ESP-IDF / ESP32 ─────────────────────────────────────────────────────────
+# ESP-IDF managed build artifacts (in firmware/ sub-crate)
+.embuild/
+
+# ─── macOS ───────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ─── Zed ─────────────────────────────────────────────────────────────────────
+# Zed project settings are worth keeping — do NOT ignore .zed/
+
+# ─── Secrets & environment ───────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Misc ────────────────────────────────────────────────────────────────────
+*.orig
+*.bak
+*.swp
+*.log
