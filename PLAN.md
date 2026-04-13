@@ -646,7 +646,7 @@ fn config_find_by_finger_id() { ... }
 
 ---
 
-### Step 4 — `fingerprint2-rs`: UART Driver
+### Step 4 — `fingerprint2-rs`: UART Driver *(est. 2–3 h)*
 
 `no_std` crate, generic over any `embedded-hal-nb` UART implementation. Can be tested on
 desktop using a mock UART backed by an in-memory buffer.
@@ -669,6 +669,13 @@ nb              = "1"   # nb::Result / nb::Error::WouldBlock
 heapless        = "0.8"
 ```
 
+`lib.rs` gate (same pattern as `cyberkey-core`):
+
+```rust
+// Compiled as no_std in production; the test harness re-enables std automatically.
+#![cfg_attr(not(test), no_std)]
+```
+
 Internal module layout:
 
 ```
@@ -679,6 +686,152 @@ fingerprint2-rs/src/
 ├── driver.rs       — Fingerprint2Driver<UART> struct
 └── error.rs        — FingerprintError<E> enum
 ```
+
+**Module breakdown**:
+
+| File | Contents |
+|---|---|
+| `error.rs` | `FingerprintError<E>` — all driver-level error variants |
+| `packet.rs` | `PacketType`, `Frame`, `serialize`, `deserialize`, `is_wakeup_packet` |
+| `commands.rs` | Opcode constants, `AutoEnrollFlags`, `LedMode`, `LedColor` |
+| `driver.rs` | `Fingerprint2Driver<UART>` — blocking public API + `DriverEvent` |
+
+---
+
+**`error.rs`** — all error variants, concrete and locked in by tests:
+
+```rust
+#[derive(Debug)]
+pub enum FingerprintError<E> {
+    /// Received frame begins with wrong magic bytes (expected 0xEF01).
+    BadFrame,
+    /// Received frame has a checksum mismatch.
+    BadChecksum,
+    /// No bytes arrived within the polling window.
+    /// In tests: MockUart rx buffer exhausted before a full frame was assembled.
+    Timeout,
+    /// PS_AutoIdentify returned a "no match" confirmation code.
+    NoMatch,
+    /// PS_AutoEnroll failed (poor image quality, repeated low-area reads, etc.).
+    EnrollFailed,
+    /// Sensor returned a non-zero confirmation code not otherwise mapped.
+    /// The raw confirmation byte is preserved for diagnostics.
+    SensorError(u8),
+    /// Underlying UART read or write error.
+    Uart(E),
+}
+```
+
+---
+
+**`packet.rs`** — frame types and codec:
+
+```rust
+pub const FRAME_MAGIC:  u16   = 0xEF01;
+pub const DEFAULT_ADDR: u32   = 0xFFFF_FFFF;
+pub const MAX_DATA_LEN: usize = 64;     // max payload bytes per frame
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PacketType {
+    Command   = 0x01,
+    Data      = 0x02,
+    Ack       = 0x07,
+    EndOfData = 0x08,
+}
+
+pub struct Frame {
+    pub addr:        u32,
+    pub packet_type: PacketType,
+    /// Payload bytes; for ACK packets, DATA[0] is the sensor's confirmation code.
+    pub data:        heapless::Vec<u8, MAX_DATA_LEN>,
+}
+
+/// Serialise a Frame into a caller-supplied byte buffer.
+/// Returns the number of bytes written, or None if the buffer is too small.
+pub fn serialize(frame: &Frame, buf: &mut [u8]) -> Option<usize>;
+
+/// Deserialise a Frame from a raw byte slice.
+/// Returns Err(BadFrame) on wrong magic or truncated input,
+/// Err(BadChecksum) on checksum mismatch.
+pub fn deserialize(buf: &[u8]) -> Result<Frame, FingerprintError<core::convert::Infallible>>;
+
+/// Returns true iff buf exactly matches the 12-byte autonomous wakeup sequence:
+/// EF 01 FF FF FF FF 07 00 03 FF 01 09
+pub fn is_wakeup_packet(buf: &[u8]) -> bool;
+```
+
+Checksum formula (from protocol spec):
+
+```
+checksum = (TYPE as u32 + LEN as u32 + DATA.iter().map(|b| *b as u32).sum::<u32>()) & 0xFFFF
+```
+
+The 2-byte `LEN` field encodes `len(DATA) + 2` (the 2-byte checksum is counted in the length).  
+Minimum valid frame size: 2 (START) + 4 (ADDR) + 1 (TYPE) + 2 (LEN) + 0 (DATA) + 2 (CSUM) = **11 bytes**.
+
+---
+
+**`commands.rs`** — opcodes and typed parameter types:
+
+```rust
+// Opcode constants — first byte of DATA in a Command frame.
+// Names preserved verbatim from the M5Stack STM32 firmware for traceability.
+pub const PS_GET_IMAGE:     u8 = 0x01;
+pub const PS_GEN_CHAR:      u8 = 0x02;
+pub const PS_SEARCH:        u8 = 0x04;
+pub const PS_REG_MODEL:     u8 = 0x05;
+pub const PS_STORE_CHAR:    u8 = 0x06;
+pub const PS_DELET_CHAR:    u8 = 0x0C;   // typo from upstream preserved
+pub const PS_EMPTY:         u8 = 0x0D;
+pub const PS_AUTO_ENROLL:   u8 = 0x31;
+pub const PS_AUTO_IDENTIFY: u8 = 0x32;
+pub const PS_HANDSHAKE:     u8 = 0x35;
+pub const PS_CONTROL_BLN:   u8 = 0x3C;
+pub const PS_SET_WORK_MODE: u8 = 0xD2;
+pub const PS_ACTIVATE:      u8 = 0xD4;
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LedMode {
+    Breathing = 1,
+    Flashing  = 2,
+    On        = 3,
+    Off       = 4,
+    FadeIn    = 5,
+    FadeOut   = 6,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LedColor {
+    Off    = 0,
+    Blue   = 1,
+    Green  = 2,
+    Cyan   = 3,
+    Red    = 4,
+    Purple = 5,
+    Yellow = 6,
+    White  = 7,
+}
+
+/// Flags byte for PS_AutoEnroll.
+/// Bit 0: overwrite an existing template at the target page ID (0 = reject if occupied).
+/// All other bits reserved — must be zero.
+pub struct AutoEnrollFlags {
+    pub allow_overwrite: bool,
+}
+
+impl AutoEnrollFlags {
+    pub fn as_byte(&self) -> u8 {
+        self.allow_overwrite as u8
+    }
+}
+```
+
+> **Opcode naming**: `PS_DELET_CHAR` preserves the upstream typo (`DeletChar`, not
+> `DeleteChar`) so that `grep PS_DeletChar` in the M5Stack C++ source maps directly to
+> the Rust constant.
 
 Driver skeleton:
 
@@ -719,8 +872,53 @@ where
         color: LedColor,
         loops: u8,
     ) -> Result<(), FingerprintError<UART::Error>>;
+
+    /// Delete one or more stored templates starting at page_id.
+    pub fn delete_template(
+        &mut self,
+        page_id: u16,
+        count: u16,
+    ) -> Result<(), FingerprintError<UART::Error>>;
+
+    /// Poll for an incoming unsolicited frame (non-blocking).
+    /// Returns Ok(DriverEvent::Wakeup) when the sensor wakes autonomously.
+    /// Returns Err(nb::Error::WouldBlock) immediately when no data is available.
+    pub fn poll_event(
+        &mut self,
+    ) -> nb::Result<DriverEvent, FingerprintError<UART::Error>>;
+}
+
+/// Events returned by poll_event().
+pub enum DriverEvent {
+    /// Sensor woke autonomously (finger placed on pad). Call auto_identify next.
+    Wakeup,
+    /// An unsolicited ACK frame arrived (uncommon; captured for diagnostics).
+    Ack { confirm: u8 },
 }
 ```
+
+**Behavioural decisions** (locked in by tests, not open questions):
+
+- **Blocking vs. nb**: the main API (`handshake`, `auto_enroll`, `auto_identify`,
+  `set_led`, `delete_template`) is synchronous — internally, `nb::block!()` loops until
+  each byte arrives. `poll_event` is the single non-blocking method; it returns
+  `nb::Error::WouldBlock` immediately when `rx` is empty, allowing the caller to sleep
+  between polls without spinning.
+- **Timeout simulation in tests**: `MockUart` does not implement a real timer. Tests that
+  validate `Timeout` behaviour use a `LimitedMockUart` wrapper that returns `WouldBlock`
+  a fixed number of times before returning `Err(FingerprintError::Timeout)`, simulating
+  the real driver's internal retry cap.
+- **Wakeup packet priority**: `is_wakeup_packet()` is checked on the first 12 bytes of
+  any incoming frame before any other parsing. If it matches, the bytes are consumed and
+  `DriverEvent::Wakeup` is returned — checksum validation is intentionally skipped for
+  this fixed sequence.
+- **Single ACK per command**: the driver reads exactly one ACK frame per outgoing
+  command. Multi-packet transfers (e.g. raw image upload) are out of scope before v1.0.
+- **Confirmation code mapping**: any ACK with `DATA[0] != 0x00` is mapped as follows:
+  - `0x09` (library empty or no matching template) → `NoMatch`
+  - `0x03`, `0x06`, `0x07`, `0x0A` (enrollment failures: bad quality, small area, poor
+    points, merge failed) → `EnrollFailed`
+  - All other non-zero codes → `SensorError(code)` (raw byte preserved for diagnostics)
 
 #### Testing `fingerprint2-rs` without hardware
 
@@ -767,6 +965,26 @@ Suggested unit tests for `packet.rs`:
 - **Wakeup packet detection**: feed the exact 12-byte sequence
   `EF 01 FF FF FF FF 07 00 03 FF 01 09` and verify it is dispatched as a
   `WakeupEvent` variant rather than treated as a standard ACK.
+- **Truncated frame**: feed only 7 bytes (below the 11-byte minimum), expect
+  `Err(FingerprintError::BadFrame)`.
+- **LEN field mismatch**: `LEN` claims 10 DATA bytes but only 5 bytes follow, expect
+  `Err(FingerprintError::BadFrame)`.
+- **Non-default address preserved**: `serialize` + `deserialize` a frame with
+  `addr = 0xABCD_1234`, assert the address round-trips without corruption.
+
+Unit tests for `commands.rs`:
+
+- **`LedColor` repr values**: `assert_eq!(LedColor::Blue as u8, 1)` and
+  `assert_eq!(LedColor::Red as u8, 4)` — sentinel check against the protocol datasheet.
+- **`LedMode` repr values**: `assert_eq!(LedMode::Breathing as u8, 1)` and
+  `assert_eq!(LedMode::Off as u8, 4)`.
+- **`AutoEnrollFlags::as_byte` false**: `AutoEnrollFlags { allow_overwrite: false }.as_byte() == 0x00`.
+- **`AutoEnrollFlags::as_byte` true**: `AutoEnrollFlags { allow_overwrite: true }.as_byte() == 0x01`.
+- **`is_wakeup_packet` true**: the exact 12-byte wakeup sequence returns `true`.
+- **`is_wakeup_packet` false on normal ACK**: a valid `handshake` success ACK byte
+  sequence returns `false`.
+- **`is_wakeup_packet` false on short slice**: a 4-byte slice returns `false` without
+  panicking.
 
 Suggested integration-level tests using `MockUart`:
 
@@ -779,6 +997,22 @@ Suggested integration-level tests using `MockUart`:
   `Err(FingerprintError::NoMatch)`.
 - **`set_led` encoding**: call `set_led(LedMode::Breathing, LedColor::Blue, 3)`, inspect
   `tx` and assert the correct `PS_ControlBLN` opcode and parameter bytes were emitted.
+- **`auto_enroll` happy path**: pre-load a multi-ACK sequence (one `0x00` ACK per capture
+  pass; for `count=3`, three consecutive ACK frames), assert `Ok(())`, and inspect `tx`
+  for the `PS_AUTO_ENROLL` opcode followed by the correct `id` and `count` bytes.
+- **`auto_enroll` quality failure**: pre-load a single ACK with confirmation code `0x06`
+  (image too noisy), expect `Err(FingerprintError::EnrollFailed)`.
+- **`auto_identify` successful match**: pre-load an ACK with `DATA[0] = 0x00` followed by
+  `[page_id_hi, page_id_lo, score_hi, score_lo]`, assert `Ok(page_id)` equals the
+  expected value.
+- **`delete_template` byte encoding**: pre-load ACK `0x00`, call `delete_template(5, 1)`,
+  inspect `tx` for the `PS_DELET_CHAR` opcode and the correct page ID and count bytes.
+- **Unmapped sensor error propagation**: pre-load ACK with confirmation code `0x15`
+  (wrong password), expect `Err(FingerprintError::SensorError(0x15))`.
+- **`poll_event` wakeup**: pre-load the 12-byte wakeup sequence into `rx`, call
+  `driver.poll_event()`, assert `Ok(DriverEvent::Wakeup)`.
+- **`poll_event` no data**: leave `rx` empty, call `driver.poll_event()`, assert
+  `Err(nb::Error::WouldBlock)`.
 
 ---
 
