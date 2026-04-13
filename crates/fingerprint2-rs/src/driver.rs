@@ -145,8 +145,8 @@ where
     fn write_frame(&mut self, frame: &Frame) -> Result<(), FingerprintError<E>> {
         let mut buf = [0u8; MAX_FRAME_SIZE];
         let n = packet::serialize(frame, &mut buf).ok_or(FingerprintError::BadFrame)?;
-        for i in 0..n {
-            self.write_byte(buf[i])?;
+        for &b in &buf[..n] {
+            self.write_byte(b)?;
         }
         self.flush_uart()
     }
@@ -392,8 +392,8 @@ where
         // This covers the wakeup packet and every minimal ACK frame.
         let mut buf12 = [0u8; 12];
         buf12[0] = b0;
-        for i in 1..12 {
-            buf12[i] = self.read_byte().map_err(nb::Error::Other)?;
+        for slot in &mut buf12[1..] {
+            *slot = self.read_byte().map_err(nb::Error::Other)?;
         }
 
         // Step 3 ─ wakeup check comes FIRST, before any other parsing.
@@ -424,8 +424,8 @@ where
         } else {
             // Need more bytes beyond the initial 12.
             frame_buf[..12].copy_from_slice(&buf12);
-            for i in 12..total {
-                frame_buf[i] = self.read_byte().map_err(nb::Error::Other)?;
+            for slot in &mut frame_buf[12..total] {
+                *slot = self.read_byte().map_err(nb::Error::Other)?;
             }
         }
 
