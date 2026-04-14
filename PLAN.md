@@ -1024,8 +1024,8 @@ Key dependencies:
 
 ```toml
 [dependencies]
-dialoguer      = "0.11"
-tabled         = "0.17"
+dialoguer      = "0.12"
+tabled         = "0.20"
 serialport     = "4"
 serde          = { version = "1", features = ["derive"] }
 serde_json     = "1"
@@ -1041,12 +1041,15 @@ $ cyberkey-cli
 
 Connected to CyberKey on /dev/tty.usbserial-3 (firmware v0.1.0)
 
+  Clock synced with host (t = 1700000000).
+
 ? What do you want to do?
   > List configured fingers
     Add a new finger
     Remove a finger
     Test TOTP generation
     Sync device clock
+    Allow BLE pairing
     Factory reset
     Exit
 
@@ -1083,6 +1086,102 @@ to the user. The associated finger is the only selector at authentication time.
   returning an error to the CLI. The device is never left in a state where a finger is
   recognised but has no associated TOTP secret.
 ```
+
+#### Wire Protocol Reference
+
+All messages are **newline-terminated JSON objects** (`\n` as frame delimiter).
+The serial link runs at 115 200 bps, 8N1.
+
+##### CLI → Firmware (commands)
+
+Every command is a JSON object with a `"cmd"` field acting as discriminant.
+
+| Command | JSON |
+|---------|------|
+| List entries | `{"cmd":"list_entries"}` |
+| Add entry | `{"cmd":"add_entry","label":"GitHub","secret_b32":"JBSWY3DPEHPK3PXP"}` |
+| Remove entry | `{"cmd":"remove_entry","label":"GitHub"}` |
+| Generate TOTP | `{"cmd":"generate_totp","slot":0}` |
+| Sync clock | `{"cmd":"sync_clock","timestamp":1700000000}` |
+| Factory reset | `{"cmd":"factory_reset","confirm":"RESET"}` |
+| Allow BLE pairing | `{"cmd":"allow_pairing"}` |
+
+Notes:
+- `add_entry` does **not** include a `finger_id` or `slot` field — the slot is
+  auto-assigned by the firmware.
+- `factory_reset` requires `"confirm":"RESET"` verbatim; the firmware must reject
+  any other value.
+- `sync_clock` timestamp is a `u64` Unix timestamp in seconds. The CLI sends this
+  automatically at startup (before showing the menu) and again if the user selects
+  "Sync device clock".
+
+##### Firmware → CLI (responses and events)
+
+**Standard success/error responses** (all commands except streaming enrollment):
+
+```
+{"ok":true}                                          ← generic success
+{"ok":false,"error":"entry_not_found"}               ← error with reason string
+{"ok":true,"entries":[...]}                          ← list_entries
+{"ok":true,"slot":0}                                 ← add_entry (final, after enrollment)
+{"ok":true,"code":996554}                            ← generate_totp
+```
+
+**Firmware greeting** (sent once automatically when the serial connection is opened):
+
+```
+{"version":"v0.1.0"}
+```
+
+The CLI reads this with a 2-second timeout; if nothing arrives (device already
+running, or older firmware), the session continues with version shown as `"unknown"`.
+
+**Streaming enrollment events** (`add_entry` only):
+
+After receiving `add_entry`, the firmware streams one event per capture action
+before sending the terminal `{"ok":true,"slot":N}` or `{"ok":false,"error":"..."}`:
+
+```
+{"event":"enroll_step","step":1,"total":3,"state":"place_finger"}
+{"event":"enroll_step","step":1,"total":3,"state":"lift_finger"}
+{"event":"enroll_step","step":2,"total":3,"state":"place_finger"}
+{"event":"enroll_step","step":2,"total":3,"state":"lift_finger"}
+{"event":"enroll_step","step":3,"total":3,"state":"place_finger"}
+{"ok":true,"slot":0}
+```
+
+`state` is always either `"place_finger"` or `"lift_finger"`.
+`step` is 1-based; `total` is the number of capture passes (3 by default).
+
+**`EntryInfo` object** (used inside the `entries` array of `list_entries`):
+
+```json
+{"slot":0,"label":"GitHub","secret_masked":"JBSW********************"}
+```
+
+- `secret_masked`: first 4 characters of the base32 secret in plaintext, followed
+  by exactly 20 asterisks. The firmware never transmits the full secret over serial.
+
+##### Deserialization strategy
+
+The CLI uses a flat `RawMessage` struct (all fields `Option`) to deserialize any
+incoming JSON in a single `serde_json::from_slice` call, then converts to the
+`DeviceMessage` enum via `TryFrom`. This avoids the ordering ambiguities of
+`#[serde(untagged)]` and keeps the discrimination logic explicit and testable.
+
+```rust
+// Discrimination order in DeviceMessage::try_from(raw: RawMessage):
+// 1. `event` field present  → EnrollStep
+// 2. `version` field present (no `ok`) → Greeting
+// 3. `ok` + `entries`       → EntryList
+// 4. `ok` + `slot`          → AddEntryOk
+// 5. `ok` + `code`          → TotpCode
+// 6. `ok` + `error`         → Error
+// 7. `ok: true` alone       → Ok
+// 8. `ok: false` alone      → Err (firmware bug: missing error message)
+```
+
+---
 
 #### Testing `cyberkey-cli`
 
