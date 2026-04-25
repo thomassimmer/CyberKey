@@ -1,12 +1,15 @@
-# Rust often needs a bit of an extra main task stack size compared to C (the default is 3K)
-# You might have to increase this further if you allocate large stack variables in the main task
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# BLE via NimBLE (Classic BT disabled to save RAM)
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CONTROLLER_ONLY=n
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 
-# Increase a bit these stack sizes as they are also a bit too small by default
-CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
-CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
+# Persist bond keys (LTK + IRK) across power cycles.
+# Without this, NimBLE uses a RAM-only store: the bond is lost on every reboot,
+# which prevents macOS from reconnecting automatically.
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
 
-# You might have to increase this further if you spawn your own Rust threads 
-# that allocate large stack variables; or better yet - use 
-# `std::thread::Builder::new().stack_size(XXX)` for spawning
-CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
+# Stack sizes
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=16384
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384

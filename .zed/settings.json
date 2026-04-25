@@ -1,0 +1,28 @@
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "check": {
+          "overrideCommand": [
+            "cargo", "check",
+            "-p", "firmware",
+            "--target", "xtensa-esp32-espidf",
+            "-Z", "build-std=std,panic_abort",
+            "--message-format=json"
+          ]
+        },
+        "cargo": {
+          "buildScripts": {
+            "overrideCommand": [
+              "cargo", "check",
+              "-p", "firmware",
+              "--target", "xtensa-esp32-espidf",
+              "-Z", "build-std=std,panic_abort",
+              "--message-format=json"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

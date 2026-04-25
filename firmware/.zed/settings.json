@@ -1,0 +1,19 @@
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "cargo": {
+          "target": "xtensa-esp32-espidf",
+          "extraEnv": {
+            "ESP_IDF_VERSION": "v5.3.4",
+            "ESP_IDF_SDKCONFIG_DEFAULTS": "sdkconfig.defaults"
+          },
+          "extraArgs": ["-Z", "build-std=std,panic_abort"]
+        },
+        "rustc": {
+          "source": "discover"
+        }
+      }
+    }
+  }
+}

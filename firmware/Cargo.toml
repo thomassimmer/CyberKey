@@ -3,25 +3,39 @@ name = "firmware"
 version = "0.1.0"
 authors = ["Thomas Simmer <thomas.simmer@hotmail.fr>"]
 edition = "2021"
-resolver = "2"
-rust-version = "1.82"
 
-[[bin]]
-name = "firmware"
-harness = false # do not use the built-in cargo test harness -> resolve rust-analyzer errors
-
-[profile.release]
-opt-level = "s"
+# Build from this directory: cargo build --release
+# Flash:                      cargo run --release
 
 [profile.dev]
-debug = true    # Symbols are nice, and they don't increase the size on Flash
-opt-level = "z"
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false
+incremental = false
+lto = "fat"
+opt-level = "s"
+overflow-checks = false
 
 [dependencies]
 log = "0.4"
-esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
-# Remove `generic-queue-8` if you plan to use `embassy-time` WITH `embassy-executor`
-embassy-time = { version = "0.5", features = ["generic-queue-8"] }
+cyberkey-hid = { path = "../crates/cyberkey-hid" }
+
+# ESP-IDF runtime — includes HAL, sys bindings, FreeRTOS, NVS, etc.
+# esp-idf-hal and esp-idf-sys are bundled and re-exported via esp_idf_svc::hal / ::sys.
+esp-idf-svc = { version = "0.51", features = ["alloc"] }
+anyhow = "1"
+
+# NimBLE BLE stack via ESP-IDF — provides bonding, RPA, HID profile helpers.
+esp32-nimble = "0.11"
+
+# Display — ST7789V2
+mipidsi           = "0.10.0"
+embedded-graphics = "0.8"
+embedded-hal      = "1.0.0"
 
 [build-dependencies]
-embuild = "0.33"
+# Locates the ESP-IDF toolchain and emits linker flags at build time.
+embuild = { version = "0.33", features = ["espidf"] }

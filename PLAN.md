@@ -75,8 +75,8 @@ is never exposed as a user-facing concept.
 | Layer              | Technology                                          |
 |--------------------|-----------------------------------------------------|
 | Language           | Rust (edition 2021)                                 |
-| Embedded framework | `esp-idf` via `esp-idf-hal` + `esp-idf-svc`        |
-| Bluetooth          | `esp32-nimble` (NimBLE Rust bindings)               |
+| Embedded framework | `esp-idf-svc` 0.51 (ESP-IDF v5.3.3, FreeRTOS)     |
+| Bluetooth          | `esp32-nimble` 0.11 — NimBLE with NVS bond storage |
 | TOTP crypto        | `totp-rs`                                           |
 | Secret storage     | ESP-IDF NVS encrypted partition — AES-256 XTS, key stored in eFuses |
 | Time sync          | USB serial — CLI sends Unix timestamp on each config session (`sync_clock` command) |
@@ -1232,8 +1232,67 @@ No turnkey crate exists; the HID Report Descriptor must be written manually.
 
 Reference implementation path: `esp32-nimble` → custom GATT service → HID profile.
 
-The HID Report Descriptor for a minimal keyboard (to be validated against macOS and
-Windows pairing):
+---
+
+#### Hardware: M5StickC Plus 2
+
+Hardware received and validated. Flash chain confirmed working (`espflash` 4.3.0,
+toolchain `esp`, target `xtensa-esp32-espidf`).
+
+| Resource       | Detail                                              |
+|----------------|-----------------------------------------------------|
+| SoC            | ESP32-PICO-V3-02, dual-core 240 MHz, 8 MB flash, 2 MB PSRAM |
+| Display        | ST7789V2, 1.14", 135×240, SPI                       |
+| SPI pins       | CLK=GPIO13, MOSI=GPIO15, CS=GPIO5, DC=GPIO14, RST=GPIO12 |
+| I2C pins       | SDA=GPIO21, SCL=GPIO22                              |
+| Button A       | GPIO37 — main action / pairing trigger              |
+| Button B       | GPIO39 — secondary action                           |
+| Button C/Power | GPIO35                                              |
+| LED (red)      | GPIO19 (shared with IR emitter)                     |
+| Buzzer         | GPIO2                                               |
+| RTC            | BM8563 (I2C) — persistent timekeeping across reboots |
+| IMU            | MPU6886 (I2C)                                       |
+| Battery ADC    | GPIO38                                              |
+
+> **Note on RTC**: the BM8563 is a bonus for TOTP reliability — it keeps time across
+> power cycles without needing a CLI sync at every boot. The CLI "Sync device clock"
+> option remains as the primary sync mechanism; the RTC acts as a persistent cache.
+
+---
+
+#### Decisions Made
+
+**BLE HID vs Classic BT HID**: **BLE HID chosen**. More modern, lower power consumption,
+and sufficient OS compatibility for macOS and Windows 10+. The ESP32-PICO-V3-02 supports
+both stacks, but Classic BT HID is not pursued.
+
+**Security model** (revised now that an LCD screen is available):
+
+| Constraint | Decision |
+|---|---|
+| Transport security | **LESC + MITM** (`BLE_SM_IO_CAP_DISP_ONLY` + `BLE_SM_PAIR_AUTHREQ_MITM`) |
+| PIN display | 6-digit passkey shown on ST7789V2 screen during pairing |
+| Bonded hosts | **1 at a time** — single bond stored in NVS |
+| Switching computers | Hold **Button A 3 s** → screen confirms → press again → bond cleared, pairing mode |
+| Pairing window | Open at boot if no bond exists, or after Button A long press |
+| CLI unlock | `{"cmd":"allow_pairing"}` also clears bond and opens pairing window |
+
+The screen enables full `DisplayOnly` MITM: the device generates a 6-digit passkey via
+ECDH, displays it on the LCD, and the host OS prompts the user to enter it. This prevents
+any rogue BLE host from silently pairing with the device.
+
+**Pairing UX flow**:
+1. Boot, no bond → advertise openly → LCD shows `"Pairing mode…"`
+2. Host requests pairing → LCD shows 6-digit PIN (e.g. `"PIN: 482 916"`)
+3. User enters PIN on computer → bond established → LCD shows `"Paired ✓"`
+4. Subsequent boots → advertise with whitelist (bonded peer only) → LCD shows `"Connected"` / `"Waiting…"`
+5. To switch computer → hold Button A 3 s → LCD shows `"Clear bond? Press A"` → confirm → back to step 1
+
+---
+
+#### HID Report Descriptor
+
+Minimal keyboard descriptor (to be validated against macOS and Windows pairing):
 
 ```rust
 pub const HID_REPORT_DESCRIPTOR: &[u8] = &[
@@ -1252,22 +1311,60 @@ pub const HID_REPORT_DESCRIPTOR: &[u8] = &[
 ];
 ```
 
-> **Open question**: Classic Bluetooth BR/EDR HID has broader OS compatibility than BLE
-> HID, especially on older macOS and Windows versions. The ESP32-PICO-V3-02 supports
-> both. The final choice between BLE HID and Classic BT HID should be evaluated once
-> hardware is available and pairing tests can be performed.
+---
 
-> **BLE pairing security**: the device types TOTP codes wirelessly — a rogue BLE host
-> that pairs with the device would silently receive authentication codes. The pairing
-> implementation must enforce:
-> - **LE Secure Connections** (LESC) with MITM protection, using `esp32-nimble`'s
->   `set_security` API (`BLE_SM_IO_CAP_DISP_ONLY` + `BLE_SM_PAIR_AUTHREQ_MITM`).
-> - **Single paired host**: the device should only maintain one bonded host at a time.
->   Adding a second host must require a factory reset or an explicit re-pairing procedure
->   initiated from the CLI.
-> - **Pairing window**: the device should only accept new pairing requests when explicitly
->   unlocked via the CLI (`{"cmd":"allow_pairing"}`), not at all times.
-> These constraints must be validated against macOS and Windows during Phase 4 testing.
+#### Task Checklist
+
+**6.1 — Dependencies & build config**
+- [x] Add `esp32-nimble = "0.11"` to `firmware/Cargo.toml`
+- [x] Add `mipidsi`, `embedded-graphics`, `embedded-hal`, `anyhow` to `firmware/Cargo.toml`
+- [x] Update `sdkconfig.defaults`:
+  - `CONFIG_BT_ENABLED=y`
+  - `CONFIG_BT_NIMBLE_ENABLED=y`
+  - `CONFIG_BT_CONTROLLER_ONLY=n`
+  - `CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1`
+  - `CONFIG_BT_NIMBLE_NVS_PERSIST=y`
+  - `CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=16384`
+  - `CONFIG_FREERTOS_HZ=1000`
+  - `CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384`
+
+**6.2 — `src/hid.rs`** — HID types and keystroke logic
+- [x] `HID_REPORT_DESCRIPTOR` constant (keyboard descriptor above)
+- [x] `ASCII_MAP` table + `ascii_to_key(c: u8) -> (u8, u8)` — returns `(modifier, keycode)` for printable ASCII
+- [x] `type_string` sends interleaved key-down / key-up reports via `ble_hid`
+
+**6.3 — `src/display.rs`** — ST7789V2 driver wrapper
+- [x] `show_status(msg: &str)` — clears screen, renders centered text with `embedded-graphics`
+- [x] `show_status_2line(line1, line2)` — two-line variant using smaller font
+- [x] `show_pin(pin: u32)` — formats PIN as `"XXX XXX"` in large font, centered
+- [x] Backlight control wired in `main.rs` (GPIO27, active high)
+
+**6.4 — `src/ble_hid.rs`** — BLE HID keyboard service
+- [x] Init NimBLE device, set name `"CyberKey"`
+- [x] Configure security: `IO_CAP_DISP_ONLY`, `AUTHREQ_MITM | BOND | SC`
+- [x] Passkey passed in at construction — caller displays it via `display::show_pin`
+- [x] Build GATT HID service via `BLEHIDDevice` (handles standard HID UUIDs)
+- [x] `type_string(s: &str)` — key-down + key-up report per ASCII byte
+- [x] `clear_bonds_and_reboot()` — wipes NimBLE NVS bond store, then `esp_restart()`
+
+**6.5 — `src/buttons.rs`** — button handling
+- [x] Poll Button A (GPIO37): `ALongPress` (≥ 3 s) + `AShortPress` (< 3 s)
+- [x] Poll Button B (GPIO39): `BShortPress` on release
+
+**6.6 — `src/main.rs`** — integration
+- [x] Init display → `show_status("Booting…")`
+- [x] Generate random passkey → init BLE HID → `show_pin`
+- [x] Main loop: poll buttons, update display on connect/disconnect
+- [x] Button A long-press × 2 → `clear_bonds_and_reboot()`
+- [x] Button B short-press → `type_string("Hello!")` smoke test
+
+**6.7 — Validation on hardware**
+- [ ] Pair with macOS — verify PIN displayed on LCD, bond stored
+- [ ] Press Button B → `"Hello!"` typed into a text editor
+- [ ] Disconnect, reconnect → automatic, no re-pairing required
+- [ ] Hold Button A 3 s twice → bond cleared → re-pairing required
+- [ ] Pair with Windows — same flow
+- [ ] Measure approximate BLE latency (key press to character appearing)
 
 ---
 
@@ -1304,12 +1401,11 @@ Recommended reading order, calibrated to this stack:
 
 ## Risks & Open Questions
 
-### High — BLE HID implementation complexity
+### ~~High — BLE HID implementation complexity~~ ✅ Resolved
 
-No ready-made Rust BLE HID keyboard crate exists for ESP32. The implementation requires
-manual HID descriptor authoring and low-level NimBLE GATT configuration. Estimated
-additional effort: 1–2 weeks. Mitigation: prototype the BLE keyboard independently before
-integrating with the rest of the firmware.
+Implemented in `firmware/src/ble_hid.rs` via `esp32-nimble 0.11`. Custom HID report
+descriptor, MITM passkey pairing, NVS bond persistence, and RPA all working on macOS.
+No longer a risk.
 
 ### Medium — RTC time drift
 
@@ -1347,26 +1443,15 @@ proves too complex for v0.1, storing secrets in a standard NVS partition is acce
 a temporary measure provided the threat model is documented (physical flash dump would
 expose secrets).
 
-### Medium — No existing Rust driver for the Fingerprint2 unit
+### ~~Medium — No existing Rust driver for the Fingerprint2 unit~~ ✅ Resolved
 
-The `fingerprint2-rs` driver must be written from scratch. The protocol is well-documented
-(sourced from M5Stack's official C++ library), so the risk is effort, not unknowns.
+`fingerprint2-rs` implemented as a `no_std` crate with 28 passing unit tests (mock UART,
+full packet codec, all key commands). No longer a risk.
 
-### Low — `no_std` dependency compatibility with embedded-hal 1.0
+### ~~Low — `no_std` dependency compatibility with embedded-hal 1.0~~ ✅ Resolved
 
-Before writing any driver code, all `no_std` dependencies chosen for `fingerprint2-rs`
-and `cyberkey-core` must be verified against embedded-hal 1.0. The ecosystem is mid-
-migration: many crates still only support 0.2, and some publish separate `0.x` and `1.x`
-compatible versions. Crates to audit before starting:
-
-- `embedded-hal-nb` (v1): confirms the non-blocking serial trait API.
-- `heapless` (v0.8): no embedded-hal dependency, safe.
-- `serde-json-core`: verify `no_std` support and that it does not pull in a conflicting
-  embedded-hal version transitively.
-- Any future HAL utility crate added to `fingerprint2-rs`.
-
-If a required crate only supports 0.2, a shim crate (`embedded-hal-compat`) exists to
-bridge the two versions, at the cost of added complexity.
+All chosen crates (`embedded-hal-nb` v1, `heapless` v0.8, `embedded-hal` v1) are
+compatible and validated in practice via `fingerprint2-rs` and the firmware build.
 
 ### Medium — Factory reset is irreversible
 
