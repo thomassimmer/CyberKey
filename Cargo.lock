@@ -897,8 +897,10 @@ dependencies = [
  "embuild",
  "esp-idf-svc",
  "esp32-nimble",
+ "fingerprint2-rs",
  "log",
  "mipidsi",
+ "nb 1.1.0",
 ]
 
 [[package]]

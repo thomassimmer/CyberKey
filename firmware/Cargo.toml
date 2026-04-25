@@ -22,6 +22,8 @@ overflow-checks = false
 [dependencies]
 log = "0.4"
 cyberkey-hid = { path = "../crates/cyberkey-hid" }
+fingerprint2-rs = { path = "../crates/fingerprint2-rs" }
+nb = "1"
 
 # ESP-IDF runtime — includes HAL, sys bindings, FreeRTOS, NVS, etc.
 # esp-idf-hal and esp-idf-sys are bundled and re-exported via esp_idf_svc::hal / ::sys.

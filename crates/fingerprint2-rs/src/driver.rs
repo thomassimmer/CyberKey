@@ -16,8 +16,8 @@
 use heapless::Vec;
 
 use crate::commands::{
-    AutoEnrollFlags, LedColor, LedMode, PS_AUTO_ENROLL, PS_AUTO_IDENTIFY, PS_CONTROL_BLN,
-    PS_DELET_CHAR, PS_HANDSHAKE,
+    AutoEnrollFlags, LedColor, LedMode, PS_ACTIVATE, PS_AUTO_ENROLL, PS_AUTO_IDENTIFY,
+    PS_CONTROL_BLN, PS_DELET_CHAR, PS_HANDSHAKE,
 };
 use crate::error::FingerprintError;
 use crate::packet::{self, DEFAULT_ADDR, Frame, MAX_DATA_LEN, PacketType};
@@ -284,6 +284,24 @@ where
     // =======================================================================
     // Public API
     // =======================================================================
+
+    /// Drain the UART RX buffer, discarding all pending bytes.
+    ///
+    /// Call before the first command to clear any unsolicited bytes the sensor
+    /// may have emitted during its own boot sequence.
+    pub fn drain_rx(&mut self) {
+        while embedded_hal_nb::serial::Read::read(&mut self.uart).is_ok() {}
+    }
+
+    /// Activate the sensor.
+    ///
+    /// Required on cold boot for some firmware versions — the sensor responds
+    /// to other commands with `0xFE` ("port inactive") until this is sent.
+    pub fn activate(&mut self) -> Result<(), FingerprintError<E>> {
+        self.send_command(&[PS_ACTIVATE])?;
+        self.read_ack()?;
+        Ok(())
+    }
 
     /// Verify that the module is powered on and responsive.
     ///
@@ -663,6 +681,25 @@ mod tests {
             extract_tx_data(&driver.uart.tx),
             vec![PS_DELET_CHAR, 0x00, 0x05, 0x00, 0x01]
         );
+    }
+
+    // =========================================================================
+    // activate
+    // =========================================================================
+
+    /// ACK confirm=0x00 → Ok(()); verifies PS_ACTIVATE opcode is transmitted.
+    #[test]
+    fn activate_happy_path() {
+        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x00])));
+        assert_eq!(driver.activate(), Ok(()));
+        assert_eq!(extract_tx_data(&driver.uart.tx), vec![PS_ACTIVATE]);
+    }
+
+    /// Empty rx → Timeout.
+    #[test]
+    fn activate_no_response() {
+        let mut driver = Fingerprint2Driver::new(MockUart::new());
+        assert_eq!(driver.activate(), Err(FingerprintError::Timeout));
     }
 
     // =========================================================================

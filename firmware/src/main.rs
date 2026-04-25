@@ -23,6 +23,7 @@ use mipidsi::{
 mod ble_hid;
 mod buttons;
 mod display;
+mod fingerprint;
 mod hid;
 
 use buttons::ButtonEvent;
@@ -100,6 +101,28 @@ fn main() -> anyhow::Result<()> {
     let ble = ble_hid::init(passkey);
 
     // ------------------------------------------------------------------
+    // Fingerprint sensor — Grove port (UART1)
+    // Grove UART convention: Yellow=Pin1=TX (MCU→sensor), White=Pin2=RX (sensor→MCU)
+    // M5StickC Plus 2 Grove: GPIO32=Yellow, GPIO33=White → TX=32, RX=33.
+    // ------------------------------------------------------------------
+    let mut fp = fingerprint::FingerprintSensor::new(
+        peripherals.uart1,
+        peripherals.pins.gpio32, // TX — Yellow Grove wire
+        peripherals.pins.gpio33, // RX — White Grove wire
+    )?;
+    // Allow the sensor's STM32 MCU time to boot before the first handshake.
+    FreeRtos::delay_ms(500);
+    if fp.init() {
+        log::info!("Fingerprint sensor ready");
+        display::show_status_2line(&mut disp, "Fingerprint", "Sensor OK");
+    } else {
+        log::warn!("Fingerprint sensor not found — check Grove cable");
+        display::show_status_2line(&mut disp, "Fingerprint", "No sensor");
+    }
+    FreeRtos::delay_ms(2000);
+    display::show_pin(&mut disp, passkey);
+
+    // ------------------------------------------------------------------
     // Buttons — GPIO37 (A), GPIO39 (B), GPIO35 (C/power); active-low.
     // GPIO35/37/39 are input-only on ESP32 silicon (no internal pull resistors;
     // the M5StickC Plus 2 board has external pull-ups on these lines).
@@ -110,7 +133,7 @@ fn main() -> anyhow::Result<()> {
         PinDriver::input(peripherals.pins.gpio35)?,
     );
 
-    main_loop(&ble, &mut disp, buttons, passkey, power_pin, backlight)?;
+    main_loop(&ble, &mut disp, buttons, passkey, power_pin, backlight, &mut fp)?;
 
     Ok(())
 }
@@ -122,6 +145,7 @@ fn main_loop<D, A, B, C, P, BL>(
     passkey: u32,
     mut power_pin: PinDriver<'_, P, Output>,
     _backlight: PinDriver<'_, BL, Output>,
+    fp: &mut fingerprint::FingerprintSensor<'_>,
 ) -> anyhow::Result<()>
 where
     D: embedded_graphics::draw_target::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
@@ -190,6 +214,29 @@ where
             display::show_status(disp, "Clearing...");
             FreeRtos::delay_ms(500);
             ble_hid::clear_bonds_and_reboot();
+        }
+
+        // Fingerprint — non-blocking poll; blocks ~20 ms only when a finger is detected.
+        match fp.poll() {
+            Some(fingerprint::IdentifyResult::Match(id)) => {
+                display::show_auth_ok(disp, id);
+                FreeRtos::delay_ms(2000);
+                if connected {
+                    display::show_status(disp, "Connected");
+                } else {
+                    display::show_pin(disp, passkey);
+                }
+            }
+            Some(fingerprint::IdentifyResult::NoMatch) => {
+                display::show_no_match(disp);
+                FreeRtos::delay_ms(2000);
+                if connected {
+                    display::show_status(disp, "Connected");
+                } else {
+                    display::show_pin(disp, passkey);
+                }
+            }
+            None => {}
         }
 
         FreeRtos::delay_ms(20);

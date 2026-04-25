@@ -17,6 +17,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -39,6 +41,8 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -63,6 +67,8 @@ jobs:
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

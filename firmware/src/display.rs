@@ -42,6 +42,33 @@ pub fn show_status_2line<D: DrawTarget<Color = Rgb565>>(
     let _ = Text::with_text_style(line2, Point::new(cx, cy + 10), style, ts).draw(display);
 }
 
+/// Show a successful fingerprint match (green text).
+pub fn show_auth_ok<D: DrawTarget<Color = Rgb565>>(display: &mut D, page_id: u16) {
+    let _ = display.clear(Rgb565::BLACK);
+    let ts = TextStyleBuilder::new().alignment(Alignment::Center).build();
+    let cx = (W / 2) as i32;
+    let cy = (H / 2) as i32;
+    let style = MonoTextStyle::new(&FONT_10X20, Rgb565::GREEN);
+    let _ = Text::with_text_style("Auth OK", Point::new(cx, cy - 12), style, ts).draw(display);
+    let id_str = format!("ID: {}", page_id);
+    let id_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
+    let _ = Text::with_text_style(&id_str, Point::new(cx, cy + 12), id_style, ts).draw(display);
+}
+
+/// Show a no-match result (red text).
+pub fn show_no_match<D: DrawTarget<Color = Rgb565>>(display: &mut D) {
+    let _ = display.clear(Rgb565::BLACK);
+    let style = MonoTextStyle::new(&FONT_10X20, Rgb565::RED);
+    let ts = TextStyleBuilder::new().alignment(Alignment::Center).build();
+    let _ = Text::with_text_style(
+        "No match",
+        Point::new((W / 2) as i32, (H / 2) as i32),
+        style,
+        ts,
+    )
+    .draw(display);
+}
+
 /// Show the 6-digit BLE passkey on a dark-blue background.
 ///
 /// ```text
