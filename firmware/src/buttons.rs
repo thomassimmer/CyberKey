@@ -8,6 +8,7 @@ use esp_idf_svc::hal::gpio::{Input, InputPin, PinDriver};
 /// Long-press threshold: 150 polls × 20 ms = 3 seconds.
 const LONG_PRESS_POLLS: u32 = 150;
 
+#[allow(clippy::enum_variant_names)]
 pub enum ButtonEvent {
     ALongPress,
     AShortPress,

@@ -381,6 +381,7 @@ where
     /// # Parameters
     ///
     /// - `security_level` — match threshold (1 = most permissive, 5 = strictest).
+    ///
     /// Returns `Ok((page_id, score))` on a match.
     pub fn auto_identify(
         &mut self,

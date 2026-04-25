@@ -96,6 +96,19 @@ pub fn show_no_match<D: DrawTarget<Color = Rgb565>>(display: &mut D) {
     .draw(display);
 }
 
+/// Show a TOTP code for 2 seconds (call before delay_ms(2000)).
+pub fn show_totp<D: DrawTarget<Color = Rgb565>>(display: &mut D, code: u32) {
+    let _ = display.clear(Rgb565::BLACK);
+    let ts = TextStyleBuilder::new().alignment(Alignment::Center).build();
+    let cx = (W / 2) as i32;
+    let cy = (H / 2) as i32;
+    let label_style = MonoTextStyle::new(&FONT_6X13, Rgb565::CSS_LIGHT_GRAY);
+    let _ = Text::with_text_style("TOTP", Point::new(cx, cy - 20), label_style, ts).draw(display);
+    let code_str = format!("{:03} {:03}", code / 1000, code % 1000);
+    let code_style = MonoTextStyle::new(&FONT_10X20, Rgb565::GREEN);
+    let _ = Text::with_text_style(&code_str, Point::new(cx, cy + 10), code_style, ts).draw(display);
+}
+
 /// Show the 6-digit BLE passkey on a dark-blue background.
 ///
 /// ```text

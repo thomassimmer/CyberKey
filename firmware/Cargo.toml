@@ -21,6 +21,7 @@ overflow-checks = false
 
 [dependencies]
 log = "0.4"
+cyberkey-core = { path = "../crates/cyberkey-core" }
 cyberkey-hid = { path = "../crates/cyberkey-hid" }
 fingerprint2-rs = { path = "../crates/fingerprint2-rs" }
 nb = "1"

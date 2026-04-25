@@ -892,6 +892,7 @@ name = "firmware"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cyberkey-core",
  "cyberkey-hid",
  "embedded-graphics",
  "embedded-hal 1.0.0",

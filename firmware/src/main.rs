@@ -9,10 +9,12 @@ use esp_idf_svc::{
     hal::{
         delay::{Delay, FreeRtos},
         gpio::{AnyIOPin, InputPin, Output, OutputPin, PinDriver},
+        i2c::{I2cConfig, I2cDriver},
         peripherals::Peripherals,
         spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
         units::Hertz,
     },
+    nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
     sys::link_patches,
 };
 use mipidsi::{
@@ -28,6 +30,75 @@ mod hid;
 
 use buttons::ButtonEvent;
 
+fn bcd2dec(bcd: u8) -> u8 {
+    (bcd >> 4) * 10 + (bcd & 0x0F)
+}
+
+const MONTH_DAYS: [u32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+fn is_leap_year(year: u32) -> bool {
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
+}
+fn rtc_to_timestamp(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> u64 {
+    let mut days = 0;
+    for y in 1970..year {
+        days += if is_leap_year(y.into()) { 366 } else { 365 };
+    }
+    days += MONTH_DAYS[month as usize - 1];
+    if month > 2 && is_leap_year(year.into()) {
+        days += 1;
+    }
+    days += (day - 1) as u32;
+
+    (days as u64 * 86400) + (hour as u64 * 3600) + (minute as u64 * 60) + second as u64
+}
+
+fn init_rtc(i2c: &mut I2cDriver) -> anyhow::Result<()> {
+    let mut buf = [0u8; 7];
+    if let Err(e) = i2c.write_read(0x51, &[0x02], &mut buf, esp_idf_svc::hal::delay::BLOCK) {
+        log::warn!("RTC read failed: {:?}, using compile time", e);
+        return fallback_time();
+    }
+
+    let vl = buf[0] & 0x80;
+    if vl != 0 {
+        log::warn!("RTC voltage low (unset), using compile time");
+        return fallback_time();
+    }
+
+    let sec = bcd2dec(buf[0] & 0x7F);
+    let min = bcd2dec(buf[1] & 0x7F);
+    let hour = bcd2dec(buf[2] & 0x3F);
+    let day = bcd2dec(buf[3] & 0x3F);
+    let month = bcd2dec(buf[5] & 0x1F);
+    let year_offset = bcd2dec(buf[6]);
+    let year = 2000 + year_offset as u16;
+
+    let ts = rtc_to_timestamp(year, month, day, hour, min, sec);
+    log::info!(
+        "RTC: {:04}-{:02}-{:02} {:02}:{:02}:{:02} -> ts={}",
+        year, month, day, hour, min, sec, ts
+    );
+    set_system_time(ts);
+    Ok(())
+}
+
+fn fallback_time() -> anyhow::Result<()> {
+    let ts: u64 = env!("BUILD_TIME").parse().unwrap_or(0);
+    log::info!("Fallback to compile time: {}", ts);
+    set_system_time(ts);
+    Ok(())
+}
+
+fn set_system_time(ts: u64) {
+    let tv = esp_idf_svc::sys::timeval {
+        tv_sec: ts as _,
+        tv_usec: 0,
+    };
+    unsafe {
+        esp_idf_svc::sys::settimeofday(&tv, std::ptr::null());
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -37,6 +108,22 @@ fn main() -> anyhow::Result<()> {
     // Power hold — GPIO4 must be driven high or the board shuts off after the button is released.
     let mut power_pin = PinDriver::output(peripherals.pins.gpio4)?;
     power_pin.set_high()?;
+
+    // NVS init
+    let default_partition = EspDefaultNvsPartition::take()?;
+    let mut nvs = EspNvs::new(default_partition, "ck", true)?;
+
+    // Hardcode a test secret for initial validation, replace with CLI flow in 8.4
+    let test_secret = "JBSWY3DPEHPK3PXP";
+    let _ = nvs.set_str("slot_0", test_secret);
+
+    // RTC init (I2C0 on GPIO21/22)
+    let i2c = peripherals.i2c0;
+    let sda = peripherals.pins.gpio21;
+    let scl = peripherals.pins.gpio22;
+    let config = I2cConfig::new().baudrate(Hertz(400_000));
+    let mut i2c_driver = I2cDriver::new(i2c, sda, scl, &config)?;
+    let _ = init_rtc(&mut i2c_driver);
 
     // SPI2: CLK=GPIO13, MOSI=GPIO15, CS=GPIO5
     let spi2 = peripherals.spi2;
@@ -133,11 +220,14 @@ fn main() -> anyhow::Result<()> {
         PinDriver::input(peripherals.pins.gpio35)?,
     );
 
-    main_loop(&ble, &mut disp, buttons, passkey, power_pin, backlight, &mut fp)?;
+    main_loop(
+        &ble, &mut disp, buttons, passkey, power_pin, backlight, &mut fp, &mut nvs,
+    )?;
 
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn main_loop<D, A, B, C, P, BL>(
     ble: &ble_hid::BleHid,
     disp: &mut D,
@@ -146,6 +236,7 @@ fn main_loop<D, A, B, C, P, BL>(
     mut power_pin: PinDriver<'_, P, Output>,
     _backlight: PinDriver<'_, BL, Output>,
     fp: &mut fingerprint::FingerprintSensor<'_>,
+    nvs: &mut EspNvs<NvsDefault>,
 ) -> anyhow::Result<()>
 where
     D: embedded_graphics::draw_target::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
@@ -270,6 +361,36 @@ where
         match fp.poll() {
             Some(fingerprint::IdentifyResult::Match(id)) => {
                 display::show_auth_ok(disp, id);
+
+                // Fetch secret from NVS
+                let key = format!("slot_{}", id);
+                let mut buf = [0u8; 65];
+                match nvs.get_str(&key, &mut buf) {
+                    Ok(Some(secret)) => {
+                        let now = unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64;
+                        match cyberkey_core::generate_totp(secret, now) {
+                            Ok(code) => {
+                                display::show_totp(disp, code);
+                                if connected {
+                                    ble.type_digits(&format!("{:06}", code));
+                                    log::info!("TOTP typed: {:06}", code);
+                                } else {
+                                    log::info!("TOTP generated (not connected): {:06}", code);
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("TOTP error: {:?}", e);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        log::warn!("No secret found for slot {}", id);
+                    }
+                    Err(e) => {
+                        log::warn!("NVS read error: {:?}", e);
+                    }
+                }
+
                 FreeRtos::delay_ms(2000);
                 if connected {
                     display::show_status(disp, "Connected");

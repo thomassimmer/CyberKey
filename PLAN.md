@@ -1399,11 +1399,11 @@ This step covers the remaining work to reach a fully functional CyberKey v0.1.
 - [x] Validates the full identify happy-path (real match → "Auth OK")
 
 **8.2 — NVS storage + TOTP on match** *(Phase 3)*
-- [ ] Add `cyberkey-core` as a firmware dependency
-- [ ] NVS namespace `ck` — store up to 10 entries: `slot_id → base32_secret`
-- [ ] On finger match: load secret from NVS → generate TOTP (requires clock) → `type_string("[6 digits][ENTER]")` via BLE HID
-- [ ] Hardcode a test secret for initial validation, replace with CLI flow in 8.4
-- [ ] Clock: read BM8563 RTC on boot; fall back to a compile-time timestamp if RTC is unset
+- [x] Add `cyberkey-core` as a firmware dependency
+- [x] NVS namespace `ck` — store up to 10 entries: `slot_id → base32_secret`
+- [x] On finger match: load secret from NVS → generate TOTP (requires clock) → `type_digits("[6 digits]")` via BLE HID (numpad keycodes, layout-independent)
+- [x] Hardcode a test secret for initial validation, replace with CLI flow in 8.4
+- [x] Clock: read BM8563 RTC on boot; fall back to a compile-time timestamp if RTC is unset
 
 **8.3 — CLI wire protocol in firmware** *(Phase 5 firmware side)*
 - [ ] Firmware listens on UART0 (USB serial) for JSON newline-delimited commands

@@ -89,6 +89,41 @@ impl BleHid {
         }
         log::info!("[HID] '{}' sent", text);
     }
+
+    /// Type a string of digits using numpad keycodes (layout-independent).
+    ///
+    /// Regular digit keycodes (0x1e–0x27) are physical-position-based and produce
+    /// wrong characters on non-QWERTY layouts (e.g. AZERTY gives "àéèç...").
+    /// Numpad keycodes (0x59–0x62) are always interpreted as digits by the host OS.
+    pub fn type_digits(&self, digits: &str) {
+        if !SUBSCRIBED.load(Ordering::Relaxed) {
+            log::warn!("[HID] not subscribed — dropping digits");
+            return;
+        }
+        for byte in digits.bytes() {
+            let keycode = match byte {
+                b'1' => 0x59u8,
+                b'2' => 0x5A,
+                b'3' => 0x5B,
+                b'4' => 0x5C,
+                b'5' => 0x5D,
+                b'6' => 0x5E,
+                b'7' => 0x5F,
+                b'8' => 0x60,
+                b'9' => 0x61,
+                b'0' => 0x62,
+                _ => continue,
+            };
+            self.input
+                .lock()
+                .set_value(&[0x00, 0x00, keycode, 0, 0, 0, 0, 0])
+                .notify();
+            FreeRtos::delay_ms(10);
+            self.input.lock().set_value(&[0u8; 8]).notify();
+            FreeRtos::delay_ms(5);
+        }
+        log::info!("[HID] digits sent");
+    }
 }
 
 // ---------------------------------------------------------------------------

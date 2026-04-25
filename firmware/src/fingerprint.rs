@@ -7,11 +7,14 @@
 //! confirmed against M5StickC Plus 2 docs (docs.m5stack.com).
 
 use esp_idf_svc::hal::{
-    delay::FreeRtos, gpio::AnyIOPin, peripheral::Peripheral, uart::{Uart, UartDriver, config::Config as UartConfig}, units::Hertz
+    delay::FreeRtos,
+    gpio::AnyIOPin,
+    peripheral::Peripheral,
+    uart::{config::Config as UartConfig, Uart, UartDriver},
+    units::Hertz,
 };
 use fingerprint2_rs::{
-    commands::{AutoEnrollFlags, LedColor, LedMode},
-    DriverEvent, Fingerprint2Driver, FingerprintError,
+    commands::AutoEnrollFlags, DriverEvent, Fingerprint2Driver, FingerprintError,
 };
 
 const BAUD: u32 = 115_200;
@@ -74,7 +77,11 @@ impl<'d> FingerprintSensor<'d> {
         match self.driver.handshake() {
             Ok(()) => {
                 self.ready = true;
-                log::info!("Fingerprint: sensor online");
+                // Sensor is awake and listening on UART — arm smart poll immediately
+                // so fingers are detected right away instead of waiting for autonomous sleep/wakeup cycle (~10s).
+                self.smart_poll_until =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
+                log::info!("Fingerprint: sensor online, smart poll armed for 10s");
                 true
             }
             Err(e) => {
@@ -105,7 +112,13 @@ impl<'d> FingerprintSensor<'d> {
 
         log::info!("begin_enroll slot={} count={}", slot, count);
         self.driver
-            .begin_auto_enroll(slot, count, AutoEnrollFlags { allow_overwrite: true })
+            .begin_auto_enroll(
+                slot,
+                count,
+                AutoEnrollFlags {
+                    allow_overwrite: true,
+                },
+            )
             .map_err(|e| log::warn!("begin_enroll error: {:?}", e))
             .is_ok()
     }
@@ -128,7 +141,11 @@ impl<'d> FingerprintSensor<'d> {
             }
             Ok(DriverEvent::Ack { confirm: 0, data }) => {
                 let stage = data.get(1).copied().unwrap_or(0);
-                log::info!("enroll ack stage=0x{:02X} data={:02X?}", stage, data.as_slice());
+                log::info!(
+                    "enroll ack stage=0x{:02X} data={:02X?}",
+                    stage,
+                    data.as_slice()
+                );
                 match stage {
                     0x03 => EnrollAck::CaptureOk,
                     0x06 => EnrollAck::Done,
@@ -155,29 +172,31 @@ impl<'d> FingerprintSensor<'d> {
         // Au lieu d'envoyer activate() (qui maintient le capteur réveillé et "sourd" pendant 10s),
         // on lance directement une grande fenêtre de Smart Polling de 10 secondes.
         // Cela te permet de tester ton empreinte fraîchement enregistrée tout de suite !
-        self.smart_poll_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
-        log::info!("fp: reactivate -> Smart Polling armé pour 10s après l'enrôlement");
+        self.smart_poll_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
+        log::info!("fp: reactivate -> smart poll armed for 10s after enrollment");
     }
 
-    /// Exécute la logique d'identification et arme le Smart Polling
-    fn execute_auto_identify(&mut self) -> Option<IdentifyResult> {
+    fn execute_auto_identify(&mut self, via: &str) -> Option<IdentifyResult> {
         self.driver.drain_rx();
-        if let Err(e) = self.driver.activate() {
-            log::warn!("fp: pre-identify activate error {:?}", e);
+        match self.driver.activate() {
+            Ok(()) => log::info!("fp: [{via}] activate OK"),
+            Err(e) => log::warn!("fp: [{via}] activate error {:?}", e),
         }
         FreeRtos::delay_ms(50);
 
+        log::info!("fp: [{via}] sending auto_identify...");
         let result = match self.driver.auto_identify(SECURITY_LEVEL) {
             Ok((id, score)) => {
-                log::info!("fp: match id={} score={}", id, score);
+                log::info!("fp: [{via}] match id={} score={}", id, score);
                 Some(IdentifyResult::Match(id))
             }
             Err(FingerprintError::NoMatch) => {
-                log::info!("fp: no match (0x09/0x08)");
+                log::info!("fp: [{via}] no match");
                 Some(IdentifyResult::NoMatch)
             }
             Err(e) => {
-                log::warn!("fp: identify error {:?}", e);
+                log::warn!("fp: [{via}] identify error {:?}", e);
                 None
             }
         };
@@ -188,7 +207,7 @@ impl<'d> FingerprintSensor<'d> {
 
         // Armer le Smart Polling pour les 5 prochaines secondes
         self.smart_poll_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
-        log::info!("fp: Début de la fenêtre de Smart Polling (5s)");
+        log::info!("fp: smart poll window start (5s)");
 
         result
     }
@@ -206,13 +225,13 @@ impl<'d> FingerprintSensor<'d> {
             if std::time::Instant::now() > until {
                 // Le temps est écoulé, on laisse le capteur s'endormir
                 self.smart_poll_until = None;
-                log::info!("fp: Fin du Smart Polling, le capteur va s'endormir dans 10s");
+                log::info!("fp: smart poll window expired, sensor will sleep in ~10s");
             } else {
                 self.driver.drain_rx();
                 match self.driver.get_image() {
                     Ok(()) => {
-                        log::info!("fp: Smart Polling -> doigt détecté !");
-                        return self.execute_auto_identify();
+                        log::info!("fp: smart poll -> finger detected");
+                        return self.execute_auto_identify("smart_poll");
                     }
                     Err(FingerprintError::SensorError(2)) => {
                         // Pas de doigt, on continue de scruter silencieusement
@@ -229,9 +248,9 @@ impl<'d> FingerprintSensor<'d> {
         // 2. WAKEUP AUTONOME
         match self.driver.poll_event() {
             Ok(DriverEvent::Wakeup) => {
-                log::info!("fp: wakeup autonome détecté");
-                FreeRtos::delay_ms(100); // Laisse le capteur se réveiller
-                self.execute_auto_identify()
+                log::info!("fp: autonomous wakeup");
+                FreeRtos::delay_ms(100);
+                self.execute_auto_identify("wakeup")
             }
             Ok(DriverEvent::Ack { confirm, .. }) => {
                 log::info!("fp: unsolicited ack confirm=0x{:02X}", confirm);
