@@ -55,6 +55,33 @@ pub fn show_auth_ok<D: DrawTarget<Color = Rgb565>>(display: &mut D, page_id: u16
     let _ = Text::with_text_style(&id_str, Point::new(cx, cy + 12), id_style, ts).draw(display);
 }
 
+/// Show enrollment progress: "Place finger" + "N / total".
+pub fn show_enroll_pass<D: DrawTarget<Color = Rgb565>>(display: &mut D, pass: u8, total: u8) {
+    let _ = display.clear(Rgb565::BLACK);
+    let ts = TextStyleBuilder::new().alignment(Alignment::Center).build();
+    let cx = (W / 2) as i32;
+    let cy = (H / 2) as i32;
+    let label_style = MonoTextStyle::new(&FONT_6X13, Rgb565::WHITE);
+    let _ = Text::with_text_style("Place finger", Point::new(cx, cy - 12), label_style, ts)
+        .draw(display);
+    let prog = format!("{} / {}", pass, total);
+    let num_style = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_CYAN);
+    let _ = Text::with_text_style(&prog, Point::new(cx, cy + 12), num_style, ts).draw(display);
+}
+
+/// Show enrollment success: "Enrolled" (green) + "Slot N".
+pub fn show_enroll_ok<D: DrawTarget<Color = Rgb565>>(display: &mut D, slot: u16) {
+    let _ = display.clear(Rgb565::BLACK);
+    let ts = TextStyleBuilder::new().alignment(Alignment::Center).build();
+    let cx = (W / 2) as i32;
+    let cy = (H / 2) as i32;
+    let ok_style = MonoTextStyle::new(&FONT_10X20, Rgb565::GREEN);
+    let _ = Text::with_text_style("Enrolled", Point::new(cx, cy - 12), ok_style, ts).draw(display);
+    let slot_str = format!("Slot {}", slot);
+    let slot_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
+    let _ = Text::with_text_style(&slot_str, Point::new(cx, cy + 12), slot_style, ts).draw(display);
+}
+
 /// Show a no-match result (red text).
 pub fn show_no_match<D: DrawTarget<Color = Rgb565>>(display: &mut D) {
     let _ = display.clear(Rgb565::BLACK);

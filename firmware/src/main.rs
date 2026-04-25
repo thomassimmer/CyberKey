@@ -192,6 +192,56 @@ where
                     }
                 }
             }
+            Some(ButtonEvent::BLongPress) => {
+                pending_bond_clear = false;
+                const ENROLL_SLOT: u16 = 0;
+                const ENROLL_PASSES: u8 = 3;
+                display::show_enroll_pass(disp, 1, ENROLL_PASSES);
+                if fp.begin_enroll(ENROLL_SLOT, ENROLL_PASSES) {
+                    let mut pass = 0u8;
+                    let mut failed = false;
+
+                    loop {
+                        match fp.poll_enroll_ack() {
+                            fingerprint::EnrollAck::CaptureOk => {
+                                pass += 1;
+                                if pass < ENROLL_PASSES {
+                                    // Sensor confirmed finger lifted; prompt user to
+                                    // reposition before the next capture.
+                                    display::show_status_2line(disp, "Lift finger!", "reposition");
+                                    FreeRtos::delay_ms(1500);
+                                    display::show_enroll_pass(disp, pass + 1, ENROLL_PASSES);
+                                } else {
+                                    display::show_status(disp, "Processing...");
+                                }
+                            }
+                            fingerprint::EnrollAck::Done => break,
+                            fingerprint::EnrollAck::Failed => {
+                                failed = true;
+                                break;
+                            }
+                            fingerprint::EnrollAck::Pending => {}
+                        }
+                        FreeRtos::delay_ms(20);
+                    }
+
+                    if !failed {
+                        display::show_enroll_ok(disp, ENROLL_SLOT);
+                    } else {
+                        display::show_status_2line(disp, "Enroll", "Failed");
+                    }
+                } else {
+                    display::show_status_2line(disp, "Enroll", "Failed");
+                }
+                // Re-arm the sensor for autonomous detection after enrollment.
+                fp.reactivate();
+                FreeRtos::delay_ms(2000);
+                if connected {
+                    display::show_status(disp, "Connected");
+                } else {
+                    display::show_pin(disp, passkey);
+                }
+            }
             Some(ButtonEvent::BShortPress) => {
                 pending_bond_clear = false;
                 if connected {

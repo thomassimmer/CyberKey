@@ -1359,12 +1359,12 @@ pub const HID_REPORT_DESCRIPTOR: &[u8] = &[
 - [x] Button B short-press → `type_string("Hello!")` smoke test
 
 **6.7 — Validation on hardware**
-- [ ] Pair with macOS — verify PIN displayed on LCD, bond stored
-- [ ] Press Button B → `"Hello!"` typed into a text editor
-- [ ] Disconnect, reconnect → automatic, no re-pairing required
-- [ ] Hold Button A 3 s twice → bond cleared → re-pairing required
-- [ ] Pair with Windows — same flow
-- [ ] Measure approximate BLE latency (key press to character appearing)
+- [x] Pair with macOS — verify PIN displayed on LCD, bond stored
+- [x] Press Button B → `"Hello!"` typed into a text editor
+- [x] Disconnect, reconnect → automatic, no re-pairing required
+- [x] Hold Button A 3 s twice → bond cleared → re-pairing required
+- [x] Pair with Windows — same flow
+- [x] Measure approximate BLE latency (key press to character appearing)
 
 ---
 
@@ -1381,6 +1381,53 @@ Recommended reading order, calibrated to this stack:
 4. [RFC 6238](https://datatracker.ietf.org/doc/html/rfc6238) — TOTP specification
 5. [USB HID Usage Tables 1.12](https://www.usb.org/sites/default/files/documents/hut1_12v2.pdf)
    — §10 (Keyboard page), needed for the HID descriptor
+
+---
+
+### Step 8 — End-to-End Integration
+
+All hardware is in hand. Steps 1–6 are complete and validated on device.
+This step covers the remaining work to reach a fully functional CyberKey v0.1.
+
+**Critical path**: 8.1 → 8.2 → 8.3 → 8.4.  Steps 8.5–8.7 are polish / hardening.
+
+---
+
+**8.1 — Enrollment via button** *(Phase 2 completion)*
+- [x] Hold Button B 3 s → `PS_AutoEnroll` on slot 0, 3 captures, display progress
+- [x] On success: display "Enrolled / Slot 0"; on failure: display error
+- [x] Validates the full identify happy-path (real match → "Auth OK")
+
+**8.2 — NVS storage + TOTP on match** *(Phase 3)*
+- [ ] Add `cyberkey-core` as a firmware dependency
+- [ ] NVS namespace `ck` — store up to 10 entries: `slot_id → base32_secret`
+- [ ] On finger match: load secret from NVS → generate TOTP (requires clock) → `type_string("[6 digits][ENTER]")` via BLE HID
+- [ ] Hardcode a test secret for initial validation, replace with CLI flow in 8.4
+- [ ] Clock: read BM8563 RTC on boot; fall back to a compile-time timestamp if RTC is unset
+
+**8.3 — CLI wire protocol in firmware** *(Phase 5 firmware side)*
+- [ ] Firmware listens on UART0 (USB serial) for JSON newline-delimited commands
+- [ ] Commands: `ping`, `list_entries`, `delete_entry`, `sync_clock`, `factory_reset`
+- [ ] `add_entry` deferred to 8.4 (depends on enrollment)
+- [ ] Run CLI listener in a FreeRTOS task so it doesn't block the main loop
+
+**8.4 — `add_entry` integration** *(Phase 2 + 5)*
+- [ ] `add_entry` command: firmware receives `{slot_id, totp_secret}` → launches `PS_AutoEnroll` → stores secret in NVS → replies `{ok: true}`
+- [ ] Replace button-based enrollment (8.1) with this flow as the primary path
+- [ ] `cyberkey-cli` `add_entry` menu option now drives the full flow end-to-end
+
+**8.5 — Factory reset** *(Phase 2 + 5)*
+- [ ] CLI `factory_reset` command: confirm `"RESET"` string → `PS_Empty` + erase NVS → reboot
+- [ ] Physical fallback: hold Button A 5 s at boot → same sequence (second press to confirm)
+
+**8.6 — Clock sync via CLI** *(Phase 3)*
+- [ ] `sync_clock` CLI command sends current Unix timestamp → firmware writes to BM8563 RTC via I2C
+- [ ] Replaces the compile-time fallback used in 8.2
+
+**8.7 — NVS encryption** *(risk Medium — target v0.2 if Rust API unavailable)*
+- [ ] Investigate `nvs_flash_secure_init` availability in `esp-idf-svc`
+- [ ] If available: enable on first boot, burn AES-256 key to eFuse
+- [ ] If not: document threat model (physical flash dump exposes secrets), ship v0.1 unencrypted
 
 ---
 

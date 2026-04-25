@@ -11,6 +11,7 @@ const LONG_PRESS_POLLS: u32 = 150;
 pub enum ButtonEvent {
     ALongPress,
     AShortPress,
+    BLongPress,
     BShortPress,
     /// Button C (power) held ≥ 3 s → power off.
     CPowerLongPress,
@@ -22,7 +23,8 @@ pub struct Buttons<'d, A: InputPin, B: InputPin, C: InputPin> {
     btn_c: PinDriver<'d, C, Input>,
     a_hold: u32,
     a_long_fired: bool,
-    b_was_pressed: bool,
+    b_hold: u32,
+    b_long_fired: bool,
     c_hold: u32,
     c_long_fired: bool,
 }
@@ -39,7 +41,8 @@ impl<'d, A: InputPin, B: InputPin, C: InputPin> Buttons<'d, A, B, C> {
             btn_c,
             a_hold: 0,
             a_long_fired: false,
-            b_was_pressed: false,
+            b_hold: 0,
+            b_long_fired: false,
             c_hold: 0,
             c_long_fired: false,
         }
@@ -73,10 +76,22 @@ impl<'d, A: InputPin, B: InputPin, C: InputPin> Buttons<'d, A, B, C> {
 
         // --- Button B ---
         if b_down {
-            self.b_was_pressed = true;
-        } else if self.b_was_pressed {
-            self.b_was_pressed = false;
-            return Some(ButtonEvent::BShortPress);
+            self.b_hold += 1;
+            if !self.b_long_fired && self.b_hold >= LONG_PRESS_POLLS {
+                self.b_long_fired = true;
+                return Some(ButtonEvent::BLongPress);
+            }
+        } else if self.b_hold > 0 {
+            let fired = if !self.b_long_fired {
+                Some(ButtonEvent::BShortPress)
+            } else {
+                None
+            };
+            self.b_hold = 0;
+            self.b_long_fired = false;
+            if fired.is_some() {
+                return fired;
+            }
         }
 
         // --- Button C (power) ---

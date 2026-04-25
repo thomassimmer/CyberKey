@@ -883,6 +883,7 @@ dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-nb",
  "heapless",
+ "log",
  "nb 1.1.0",
 ]
 

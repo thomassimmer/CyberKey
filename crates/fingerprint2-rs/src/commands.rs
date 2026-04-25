@@ -94,8 +94,11 @@ pub struct AutoEnrollFlags {
 
 impl AutoEnrollFlags {
     /// Encode the flags into the single byte expected by the sensor.
+    ///
+    /// From the official M5Stack source:
+    /// `FINGERPRINT_AUTO_ENROLL_ALLOW_OVERWRITE_ID = (1 << 3)`
     pub fn as_byte(&self) -> u8 {
-        self.allow_overwrite as u8
+        (self.allow_overwrite as u8) << 3
     }
 }
 
@@ -156,13 +159,14 @@ mod tests {
     }
 
     #[test]
-    fn auto_enroll_flags_true_is_one() {
+    fn auto_enroll_flags_allow_overwrite_is_bit3() {
+        // Official: FINGERPRINT_AUTO_ENROLL_ALLOW_OVERWRITE_ID = (1 << 3) = 0x08
         assert_eq!(
             AutoEnrollFlags {
                 allow_overwrite: true
             }
             .as_byte(),
-            0x01
+            0x08
         );
     }
 

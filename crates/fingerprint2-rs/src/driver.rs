@@ -28,7 +28,7 @@ use crate::packet::{self, DEFAULT_ADDR, Frame, MAX_DATA_LEN, PacketType};
 
 /// Maximum number of `WouldBlock` retries before [`Fingerprint2Driver::read_byte`]
 /// gives up and returns [`FingerprintError::Timeout`].
-const MAX_RETRIES: usize = 10_000;
+const MAX_RETRIES: usize = 50_000_000;
 
 /// Maximum serialized frame size in bytes.
 /// = header(9) + MAX_DATA_LEN + checksum(2)
@@ -47,7 +47,10 @@ pub enum DriverEvent {
     Wakeup,
 
     /// An unsolicited ACK frame arrived (uncommon; captured for diagnostics).
-    Ack { confirm: u8 },
+    Ack {
+        confirm: u8,
+        data: heapless::Vec<u8, { crate::packet::MAX_DATA_LEN }>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -257,12 +260,12 @@ where
     ///
     /// | Code(s)               | Meaning                  | Mapped to         |
     /// |-----------------------|--------------------------|-------------------|
-    /// | `0x09`                | No template match        | `NoMatch`         |
+    /// | `0x08`, `0x09`        | No template match        | `NoMatch`         |
     /// | `0x03`,`0x06`,`0x07`,`0x0A` | Enrollment failure | `EnrollFailed`   |
     /// | anything else         | Undocumented sensor error| `SensorError(n)`  |
     fn map_confirm(code: u8) -> FingerprintError<E> {
         match code {
-            0x09 => FingerprintError::NoMatch,
+            0x08 | 0x09 => FingerprintError::NoMatch,
             0x03 | 0x06 | 0x07 | 0x0A => FingerprintError::EnrollFailed,
             other => FingerprintError::SensorError(other),
         }
@@ -331,11 +334,42 @@ where
         flags: AutoEnrollFlags,
     ) -> Result<(), FingerprintError<E>> {
         let [id_hi, id_lo] = id.to_be_bytes();
-        self.send_command(&[PS_AUTO_ENROLL, id_hi, id_lo, count, flags.as_byte()])?;
+        self.send_command(&[PS_AUTO_ENROLL, id_hi, id_lo, count, 0x00, flags.as_byte()])?;
+        self.read_ack()?; // Consume immediate command ACK
+
         for _ in 0..count {
             self.read_ack()?;
         }
         Ok(())
+    }
+
+    /// Send `PS_AUTO_ENROLL` without reading any ACK.
+    ///
+    /// Use [`read_enroll_pass`] once per capture pass to receive each per-pass
+    /// ACK non-blockingly, so the caller can update a display between passes.
+    pub fn begin_auto_enroll(
+        &mut self,
+        id: u16,
+        count: u8,
+        flags: AutoEnrollFlags,
+    ) -> Result<(), FingerprintError<E>> {
+        let [id_hi, id_lo] = id.to_be_bytes();
+        self.send_command(&[PS_AUTO_ENROLL, id_hi, id_lo, count, 0x00, flags.as_byte()])?;
+        self.read_ack().map(|_| ())
+    }
+
+    /// Poll for one enrollment-pass ACK — **non-blocking**.
+    ///
+    /// Returns `Ok(())` on a success ACK, `Err(nb::Error::WouldBlock)` when no
+    /// byte is available yet, or `Err(nb::Error::Other(...))` on sensor error.
+    pub fn read_enroll_pass(
+        &mut self,
+    ) -> nb::Result<heapless::Vec<u8, MAX_DATA_LEN>, FingerprintError<E>> {
+        match self.poll_event()? {
+            DriverEvent::Ack { confirm: 0, data } => Ok(data),
+            DriverEvent::Ack { confirm, .. } => Err(nb::Error::Other(Self::map_confirm(confirm))),
+            DriverEvent::Wakeup => Err(nb::Error::Other(FingerprintError::BadFrame)),
+        }
     }
 
     /// High-level autonomous identification.
@@ -347,15 +381,41 @@ where
     /// # Parameters
     ///
     /// - `security_level` — match threshold (1 = most permissive, 5 = strictest).
-    pub fn auto_identify(&mut self, security_level: u8) -> Result<u16, FingerprintError<E>> {
-        self.send_command(&[PS_AUTO_IDENTIFY, security_level])?;
-        let ack = self.read_ack()?;
-        // ACK DATA layout: [0x00, page_id_hi, page_id_lo, score_hi, score_lo]
-        if ack.data.len() < 3 {
-            return Err(FingerprintError::BadFrame);
+    /// Returns `Ok((page_id, score))` on a match.
+    pub fn auto_identify(
+        &mut self,
+        security_level: u8,
+    ) -> Result<(u16, u16), FingerprintError<E>> {
+        // U203 protocol requires: [opcode, level, start_page_hi, start_page_lo, capacity_hi, capacity_lo].
+        // Start 0 (0x0000), Capacity 200 (0x00C8) = search all 200 slots.
+        self.send_command(&[PS_AUTO_IDENTIFY, security_level, 0x00, 0x00, 0x00, 0xC8])?;
+
+        // The sensor sends a stream of stage-coded ACKs before the final result:
+        //   data[1] = 0x00  LEGAL_CHECK  — discard
+        //   data[1] = 0x01  GET_IMAGE    — discard
+        //   data[1] = 0x05  VERIFY       — final: contains page_id + score
+        // Loop until we reach the VERIFY stage; read_ack() propagates any
+        // non-zero confirm (e.g. 0x09 NoMatch) as an error immediately.
+        loop {
+            let frame = self.read_ack()?;
+            let stage = frame.data.get(1).copied().unwrap_or(0);
+            log::info!("Stage reçu : {}", stage);
+
+            if stage == 0x05 {
+                // VERIFY ACK: [0x00, 0x05, id_hi, id_lo, score_hi, score_lo]
+                if frame.data.len() < 4 {
+                    return Err(FingerprintError::BadFrame);
+                }
+                let page_id = u16::from_be_bytes([frame.data[2], frame.data[3]]);
+                let score = if frame.data.len() >= 6 {
+                    u16::from_be_bytes([frame.data[4], frame.data[5]])
+                } else {
+                    0
+                };
+                return Ok((page_id, score));
+            }
+            // Intermediate stage (LEGAL_CHECK, GET_IMAGE) — keep reading.
         }
-        let page_id = u16::from_be_bytes([ack.data[1], ack.data[2]]);
-        Ok(page_id)
     }
 
     /// Control the RGB LED ring.
@@ -372,6 +432,16 @@ where
         loops: u8,
     ) -> Result<(), FingerprintError<E>> {
         self.send_command(&[PS_CONTROL_BLN, mode as u8, color as u8, loops])?;
+        self.read_ack()?;
+        Ok(())
+    }
+
+    /// Check if a finger is currently on the pad (useful for active polling).
+    ///
+    /// Returns `Ok(())` if a finger is detected and an image was captured.
+    /// Returns `Err(SensorError(2))` if no finger is on the pad.
+    pub fn get_image(&mut self) -> Result<(), FingerprintError<E>> {
+        self.send_command(&[crate::commands::PS_GET_IMAGE])?;
         self.read_ack()?;
         Ok(())
     }
@@ -452,7 +522,10 @@ where
             .map_err(|e| nb::Error::Other(Self::convert_codec_err(e)))?;
 
         let confirm = frame.data.first().copied().unwrap_or(0);
-        Ok(DriverEvent::Ack { confirm })
+        Ok(DriverEvent::Ack {
+            confirm,
+            data: frame.data,
+        })
     }
 }
 
@@ -582,22 +655,35 @@ mod tests {
     // auto_identify
     // =========================================================================
 
-    /// ACK confirm code 0x09 → NoMatch.
+    /// confirm code 0x09 on any ACK → NoMatch (error propagated from read_ack).
     #[test]
     fn auto_identify_no_match() {
         let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x09])));
         assert_eq!(driver.auto_identify(3), Err(FingerprintError::NoMatch));
     }
 
-    /// Full identify ACK: DATA=[0x00, page_id_hi, page_id_lo, score_hi, score_lo]
-    /// → Ok(page_id).
+    /// Sensor sends LEGAL_CHECK then VERIFY — intermediate ACK is skipped,
+    /// ID and score are extracted from the VERIFY frame.
     #[test]
     fn auto_identify_success() {
+        // LEGAL_CHECK: [confirm=0x00, stage=0x00]
+        // VERIFY:      [confirm=0x00, stage=0x05, id_hi=0x00, id_lo=0x05, score_hi=0x00, score_lo=0xFA]
         // page_id = 5 (0x0005), score = 250 (0x00FA)
-        let rx = ack_bytes(&[0x00, 0x00, 0x05, 0x00, 0xFA]);
+        let rx: Vec<u8> = ack_bytes(&[0x00, 0x00])
+            .into_iter()
+            .chain(ack_bytes(&[0x00, 0x05, 0x00, 0x05, 0x00, 0xFA]))
+            .collect();
         let mut driver = Fingerprint2Driver::new(MockUart::with_rx(rx));
 
-        assert_eq!(driver.auto_identify(3), Ok(5));
+        assert_eq!(driver.auto_identify(3), Ok((5, 250)));
+    }
+
+    /// Sensor sends only the VERIFY frame (no intermediate ACKs) — still works.
+    #[test]
+    fn auto_identify_success_no_intermediate() {
+        let rx = ack_bytes(&[0x00, 0x05, 0x00, 0x05, 0x00, 0xFA]);
+        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(rx));
+        assert_eq!(driver.auto_identify(3), Ok((5, 250)));
     }
 
     // =========================================================================
@@ -629,7 +715,8 @@ mod tests {
     /// Verifies PS_AUTO_ENROLL opcode and big-endian id/count/flags bytes.
     #[test]
     fn auto_enroll_happy_path() {
-        let rx: Vec<u8> = (0..3).flat_map(|_| ack_bytes(&[0x00])).collect();
+        // Need 1 command ACK + 3 capture ACKs = 4 ACKs total
+        let rx: Vec<u8> = (0..4).flat_map(|_| ack_bytes(&[0x00])).collect();
         let mut driver = Fingerprint2Driver::new(MockUart::with_rx(rx));
 
         assert_eq!(
@@ -642,10 +729,10 @@ mod tests {
             ),
             Ok(())
         );
-        // DATA must be: [PS_AUTO_ENROLL, id_hi=0x00, id_lo=0x01, count=3, flags=0x00]
+        // DATA must be: [PS_AUTO_ENROLL, id_hi=0x00, id_lo=0x01, count=3, param_hi=0x00, param_lo=0x00]
         assert_eq!(
             extract_tx_data(&driver.uart.tx),
-            vec![PS_AUTO_ENROLL, 0x00, 0x01, 0x03, 0x00]
+            vec![PS_AUTO_ENROLL, 0x00, 0x01, 0x03, 0x00, 0x00]
         );
     }
 
