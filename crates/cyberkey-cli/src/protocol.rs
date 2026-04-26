@@ -67,9 +67,9 @@ pub enum Command {
     GenerateTotp { slot: u8 },
 
     /// Synchronise the device RTC with the host Unix timestamp (seconds since
-    /// the UNIX epoch). Should be sent once at the start of every config
-    /// session.
-    SyncClock { timestamp: u64 },
+    /// the UNIX epoch) and the local UTC offset so the display shows local
+    /// time. Should be sent once at the start of every config session.
+    SyncClock { timestamp: u64, tz_offset_secs: i32 },
 
     /// Permanently erase all fingerprints and TOTP secrets, then reboot.
     ///

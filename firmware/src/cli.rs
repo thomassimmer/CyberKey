@@ -81,6 +81,8 @@ struct Cmd {
     timestamp: Option<u64>,
     /// Used by: `factory_reset`
     confirm: Option<String>,
+    /// Used by: `sync_clock` — seconds east of UTC (e.g. 7200 for UTC+2).
+    tz_offset_secs: Option<i32>, // Option because Cmd is a flat catch-all struct
 }
 
 #[derive(Serialize)]
@@ -255,7 +257,7 @@ fn dispatch(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
         "remove_entry" => cmd_remove_entry(cmd, nvs),
         "delete_entry" => cmd_delete_entry_by_slot(cmd, nvs),
         "generate_totp" => cmd_generate_totp(cmd, nvs),
-        "sync_clock" => cmd_sync_clock(cmd),
+        "sync_clock" => cmd_sync_clock(cmd, nvs),
         "factory_reset" => cmd_factory_reset(cmd, nvs),
         "allow_pairing" => Resp::ok_msg("not yet implemented"),
         other => Resp::err(format!("unknown cmd: {other}")),
@@ -434,7 +436,7 @@ fn cmd_generate_totp(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     }
 }
 
-fn cmd_sync_clock(cmd: &Cmd) -> Resp {
+fn cmd_sync_clock(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     // Accept both "timestamp" (cyberkey-cli) and "ts" (legacy) field names.
     let Some(ts) = cmd.timestamp.or(cmd.ts) else {
         return Resp::err("missing field: timestamp");
@@ -452,7 +454,13 @@ fn cmd_sync_clock(cmd: &Cmd) -> Resp {
     if let Ok(mut guard) = crate::PENDING_RTC_WRITE.lock() {
         *guard = Some(ts);
     }
-    log::info!("CLI: system clock set to {ts}");
+    let offset = cmd.tz_offset_secs.unwrap_or(0);
+    crate::UTC_OFFSET_SECS.store(offset, std::sync::atomic::Ordering::Relaxed);
+    // Persist the offset so it is restored at the next boot without a host sync.
+    if let Ok(guard) = nvs.lock() {
+        let _ = guard.0.set_i32("tz_offset", offset);
+    }
+    log::info!("CLI: system clock set to {ts}, UTC offset {offset} s");
     Resp::ok()
 }
 

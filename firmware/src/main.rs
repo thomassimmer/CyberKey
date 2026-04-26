@@ -10,6 +10,13 @@ use std::{
 
 use esp_idf_svc::{
     hal::{
+        adc::{
+            attenuation,
+            oneshot::{
+                config::{AdcChannelConfig, Calibration},
+                AdcChannelDriver, AdcDriver,
+            },
+        },
         delay::{Delay, FreeRtos},
         gpio::{AnyIOPin, InputPin, Output, OutputPin, PinDriver},
         i2c::{I2cConfig, I2cDriver},
@@ -35,8 +42,12 @@ mod hid;
 
 /// Set by `cmd_sync_clock` in the CLI task; drained by the main loop which
 /// has exclusive access to the I2C bus and can write it to the BM8563.
-pub(crate) static PENDING_RTC_WRITE: std::sync::Mutex<Option<u64>> =
-    std::sync::Mutex::new(None);
+pub(crate) static PENDING_RTC_WRITE: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+
+/// UTC offset in seconds (e.g. 7200 for UTC+2). Set by `sync_clock`; applied
+/// in `format_time()` so the display shows local time rather than UTC.
+pub(crate) static UTC_OFFSET_SECS: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(0);
 
 use buttons::ButtonEvent;
 
@@ -65,7 +76,20 @@ fn timestamp_to_datetime(ts: u64) -> (u16, u8, u8, u8, u8, u8) {
     }
 
     let leap = is_leap_year(year as u32);
-    let month_lens: [u32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_lens: [u32; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 1u8;
     for &len in &month_lens {
         if days < len {
@@ -81,19 +105,24 @@ fn timestamp_to_datetime(ts: u64) -> (u16, u8, u8, u8, u8, u8) {
 fn write_rtc(i2c: &mut I2cDriver, ts: u64) {
     let (year, month, day, hour, minute, second) = timestamp_to_datetime(ts);
     let buf = [
-        0x02u8,                          // start at register 0x02
-        dec2bcd(second),                 // 0x02: seconds — VL bit=0 clears the flag
-        dec2bcd(minute),                 // 0x03: minutes
-        dec2bcd(hour),                   // 0x04: hours
-        dec2bcd(day),                    // 0x05: days
-        0x00,                            // 0x06: weekday (not critical)
-        dec2bcd(month),                  // 0x07: months (century bit=0 → 2000s)
-        dec2bcd((year - 2000) as u8),    // 0x08: years (00-99 offset from 2000)
+        0x02u8,                       // start at register 0x02
+        dec2bcd(second),              // 0x02: seconds — VL bit=0 clears the flag
+        dec2bcd(minute),              // 0x03: minutes
+        dec2bcd(hour),                // 0x04: hours
+        dec2bcd(day),                 // 0x05: days
+        0x00,                         // 0x06: weekday (not critical)
+        dec2bcd(month),               // 0x07: months (century bit=0 → 2000s)
+        dec2bcd((year - 2000) as u8), // 0x08: years (00-99 offset from 2000)
     ];
     match i2c.write(0x51, &buf, esp_idf_svc::hal::delay::BLOCK) {
         Ok(()) => log::info!(
             "RTC written: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            year, month, day, hour, minute, second
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second
         ),
         Err(e) => log::warn!("RTC write failed: {:?}", e),
     }
@@ -173,6 +202,16 @@ fn set_system_time(ts: u64) {
     }
 }
 
+/// Return the current wall-clock time as `"HH:MM"` in local time.
+fn format_time() -> String {
+    let utc = unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as i64;
+    let local = utc + UTC_OFFSET_SECS.load(Ordering::Relaxed) as i64;
+    let local = local.max(0) as u64;
+    let minute = ((local / 60) % 60) as u8;
+    let hour = ((local / 3600) % 24) as u8;
+    format!("{:02}:{:02}", hour, minute)
+}
+
 fn main() -> anyhow::Result<()> {
     link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -182,6 +221,34 @@ fn main() -> anyhow::Result<()> {
     // Power hold — GPIO4 must be driven high or the board shuts off after the button is released.
     let mut power_pin = PinDriver::output(peripherals.pins.gpio4)?;
     power_pin.set_high()?;
+
+    // Battery — GPIO38 / ADC1 with a ÷2 voltage divider (M5Unified: _adc_ratio = 2.0).
+    // Line-fitting calibration (esp_adc_cal) corrects ESP32 ADC non-linearity.
+    // Formula mirrors M5Unified getBatteryLevel: map 3300–4150 mV → 0–100 %.
+    let bat_adc = AdcDriver::new(peripherals.adc1)?;
+    let mut bat_ch = AdcChannelDriver::new(
+        bat_adc,
+        peripherals.pins.gpio38,
+        &AdcChannelConfig {
+            attenuation: attenuation::DB_11,
+            calibration: Calibration::Line,
+            ..Default::default()
+        },
+    )?;
+    let mut read_battery = || -> Option<u8> {
+        match bat_ch.read() {
+            Ok(mv_adc) => {
+                let mv_bat = mv_adc as f32 * 2.0;
+                log::debug!("Battery: mv_adc={} mv_bat={:.0}", mv_adc, mv_bat);
+                let level = (mv_bat - 3300.0) * 100.0 / 800.0;
+                Some(level.clamp(0.0, 100.0) as u8)
+            }
+            Err(e) => {
+                log::warn!("Battery ADC read failed: {:?}", e);
+                None
+            }
+        }
+    };
 
     // NVS init — wrapped in Arc<Mutex> so the CLI task can share it.
     // nvs_keys partition holds the AES-256 key generated on first boot; nvs holds encrypted data.
@@ -199,6 +266,15 @@ fn main() -> anyhow::Result<()> {
     };
     let nvs_inner = EspNvs::new(nvs_partition, "ck", true)?;
     let nvs = Arc::new(Mutex::new(cli::SharedNvs(nvs_inner)));
+
+    // Restore UTC offset persisted by the last sync_clock call so local time
+    // displays correctly at boot without needing a host connection.
+    if let Ok(guard) = nvs.lock() {
+        if let Ok(Some(offset)) = guard.0.get_i32("tz_offset") {
+            UTC_OFFSET_SECS.store(offset, Ordering::Relaxed);
+            log::info!("Restored UTC offset: {} s", offset);
+        }
+    }
 
     // Enrollment IPC queue — CLI task posts a request here; main loop picks it up.
     let enroll_queue: cli::EnrollQueue = Arc::new(Mutex::new(None));
@@ -272,7 +348,7 @@ fn main() -> anyhow::Result<()> {
         .display_size(135, 240)
         .display_offset(52, 40)
         .invert_colors(ColorInversion::Inverted)
-        .color_order(ColorOrder::Bgr)
+        .color_order(ColorOrder::Rgb)
         .orientation(Orientation::new().rotate(Rotation::Deg90))
         .init(&mut delay)
         .map_err(|e| anyhow::anyhow!("{:?}", e))?;
@@ -281,7 +357,8 @@ fn main() -> anyhow::Result<()> {
     let mut backlight = PinDriver::output(bl_pin)?;
     backlight.set_high()?;
 
-    display::show_pin(&mut disp, passkey);
+    let sb = display::StatusBar::unknown();
+    display::show_pin(&mut disp, &sb, passkey);
 
     // ------------------------------------------------------------------
     // BLE HID
@@ -302,13 +379,13 @@ fn main() -> anyhow::Result<()> {
     FreeRtos::delay_ms(500);
     if fp.init() {
         log::info!("Fingerprint sensor ready");
-        display::show_status_2line(&mut disp, "Fingerprint", "Sensor OK");
+        display::show_status_2line(&mut disp, &sb, "Fingerprint", "Sensor OK");
     } else {
         log::warn!("Fingerprint sensor not found — check Grove cable");
-        display::show_status_2line(&mut disp, "Fingerprint", "No sensor");
+        display::show_status_2line(&mut disp, &sb, "Fingerprint", "No sensor");
     }
     FreeRtos::delay_ms(2000);
-    display::show_pin(&mut disp, passkey);
+    display::show_pin(&mut disp, &sb, passkey);
 
     // ------------------------------------------------------------------
     // Buttons — GPIO37 (A), GPIO39 (B), GPIO35 (C/power); active-low.
@@ -333,7 +410,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         if hold >= HOLD_TARGET {
-            display::show_status_2line(&mut disp, "Factory Reset?", "Press A again");
+            display::show_status_2line(&mut disp, &sb, "Factory Reset?", "Press A again");
 
             // Wait for release, then wait for a second press (10 s timeout).
             while buttons.is_a_down() {
@@ -351,7 +428,7 @@ fn main() -> anyhow::Result<()> {
 
             if confirmed {
                 log::warn!("Factory reset: triggered via physical button (Button A hold at boot)");
-                display::show_status(&mut disp, "Resetting...");
+                display::show_status(&mut disp, &sb, "Resetting...");
                 log::info!("Factory reset: clearing fingerprint templates...");
                 fp.empty_template_library();
                 log::info!("Factory reset: fingerprint templates cleared");
@@ -365,7 +442,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 log::info!("Factory reset: NVS erased");
                 log::warn!("Factory reset: complete — rebooting");
-                display::show_reset_ok(&mut disp);
+                display::show_reset_ok(&mut disp, &sb);
                 FreeRtos::delay_ms(2000);
                 unsafe { esp_idf_svc::sys::esp_restart() }
             }
@@ -383,13 +460,14 @@ fn main() -> anyhow::Result<()> {
         nvs,
         enroll_queue,
         &mut i2c_driver,
+        &mut read_battery,
     )?;
 
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-fn main_loop<D, A, B, C, P, BL>(
+fn main_loop<D, A, B, C, P, BL, F>(
     ble: &ble_hid::BleHid,
     disp: &mut D,
     mut buttons: buttons::Buttons<'_, A, B, C>,
@@ -400,6 +478,7 @@ fn main_loop<D, A, B, C, P, BL>(
     nvs: Arc<Mutex<cli::SharedNvs>>,
     enroll_queue: cli::EnrollQueue,
     i2c: &mut I2cDriver<'_>,
+    read_battery: &mut F,
 ) -> anyhow::Result<()>
 where
     D: embedded_graphics::draw_target::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
@@ -408,16 +487,45 @@ where
     C: InputPin,
     P: OutputPin,
     BL: OutputPin,
+    F: FnMut() -> Option<u8>,
 {
     let mut last_connected = false;
     let mut pending_bond_clear = false;
 
+    // Status-bar state
+    let mut battery: Option<u8> = read_battery();
+    let mut last_battery_tick: u32 = 0;
+    let mut last_minute: u8 = 255; // force topbar draw on first iteration
+    let mut tick: u32 = 0;
+
     loop {
+        tick = tick.wrapping_add(1);
+
         // Drain any pending RTC write requested by the CLI task.
         if let Ok(mut guard) = PENDING_RTC_WRITE.lock() {
             if let Some(ts) = guard.take() {
                 write_rtc(i2c, ts);
             }
+        }
+
+        // Refresh battery every 30 s (1 500 × 20 ms ticks).
+        if tick.wrapping_sub(last_battery_tick) >= 1_500 {
+            battery = read_battery();
+            last_battery_tick = tick;
+        }
+
+        let time_str = format_time();
+        let sb = display::StatusBar {
+            time: &time_str,
+            battery,
+        };
+
+        // Refresh the top bar when the minute changes (no content repaint).
+        let cur_minute =
+            (unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64 / 60 % 60) as u8;
+        if cur_minute != last_minute {
+            last_minute = cur_minute;
+            display::update_topbar(disp, &sb);
         }
 
         let connected = ble_hid::CONNECTED.load(Ordering::Relaxed);
@@ -426,30 +534,30 @@ where
             last_connected = connected;
             pending_bond_clear = false;
             if connected {
-                display::show_status(disp, "Connected");
+                display::show_status(disp, &sb, "Connected");
             } else {
-                display::show_pin(disp, passkey);
+                display::show_pin(disp, &sb, passkey);
             }
         }
 
         match buttons.poll() {
             Some(ButtonEvent::ALongPress) => {
                 if pending_bond_clear {
-                    display::show_status(disp, "Clearing...");
+                    display::show_status(disp, &sb, "Clearing...");
                     FreeRtos::delay_ms(500);
                     ble_hid::clear_bonds_and_reboot();
                 } else {
                     pending_bond_clear = true;
-                    display::show_status_2line(disp, "Clear bond?", "Hold A again");
+                    display::show_status_2line(disp, &sb, "Clear bond?", "Hold A again");
                 }
             }
             Some(ButtonEvent::AShortPress) => {
                 if pending_bond_clear {
                     pending_bond_clear = false;
                     if connected {
-                        display::show_status(disp, "Connected");
+                        display::show_status(disp, &sb, "Connected");
                     } else {
-                        display::show_pin(disp, passkey);
+                        display::show_pin(disp, &sb, passkey);
                     }
                 }
             }
@@ -464,7 +572,7 @@ where
                 }
             }
             Some(ButtonEvent::CPowerLongPress) => {
-                display::show_status(disp, "Powering off...");
+                display::show_status(disp, &sb, "Powering off...");
                 FreeRtos::delay_ms(500);
                 power_pin.set_low()?;
                 loop {
@@ -476,7 +584,7 @@ where
 
         // Honour bond-clear flag (can also be set by future CLI command).
         if ble_hid::CLEAR_BONDS.load(Ordering::Relaxed) {
-            display::show_status(disp, "Clearing...");
+            display::show_status(disp, &sb, "Clearing...");
             FreeRtos::delay_ms(500);
             ble_hid::clear_bonds_and_reboot();
         }
@@ -484,12 +592,12 @@ where
         // CLI-driven factory reset: erase fingerprint templates then reboot.
         if cli::FACTORY_RESET.load(Ordering::Relaxed) {
             log::warn!("Factory reset: triggered via CLI");
-            display::show_status(disp, "Resetting...");
+            display::show_status(disp, &sb, "Resetting...");
             log::info!("Factory reset: clearing fingerprint templates...");
             fp.empty_template_library();
             log::info!("Factory reset: fingerprint templates cleared");
             log::warn!("Factory reset: complete — rebooting");
-            display::show_reset_ok(disp);
+            display::show_reset_ok(disp, &sb);
             FreeRtos::delay_ms(2000);
             unsafe { esp_idf_svc::sys::esp_restart() }
         }
@@ -499,7 +607,7 @@ where
             if let Some(request) = eq.take() {
                 drop(eq); // release lock before the blocking enrollment loop
                 const PASSES: u8 = 3;
-                display::show_status_2line(disp, "CLI Enroll", "Place finger");
+                display::show_status_2line(disp, &sb, "CLI Enroll", "Place finger");
                 if fp.begin_enroll(request.slot, PASSES) {
                     let _ = request.reply.send(cli::EnrollResp::PlaceFinger {
                         step: 1,
@@ -521,21 +629,22 @@ where
                                     });
                                     display::show_status_2line(
                                         disp,
+                                        &sb,
                                         "Lift + replace",
                                         &format!("pass {}/{}", pass + 1, PASSES),
                                     );
                                 } else {
-                                    display::show_status(disp, "Processing...");
+                                    display::show_status(disp, &sb, "Processing...");
                                 }
                             }
                             fingerprint::EnrollAck::Done => {
                                 let _ = request.reply.send(cli::EnrollResp::Done);
-                                display::show_enroll_ok(disp, request.slot);
+                                display::show_enroll_ok(disp, &sb, request.slot);
                                 break;
                             }
                             fingerprint::EnrollAck::Failed => {
                                 let _ = request.reply.send(cli::EnrollResp::Failed);
-                                display::show_status_2line(disp, "Enroll", "Failed");
+                                display::show_status_2line(disp, &sb, "Enroll", "Failed");
                                 break;
                             }
                             fingerprint::EnrollAck::Pending => {}
@@ -544,14 +653,14 @@ where
                     }
                 } else {
                     let _ = request.reply.send(cli::EnrollResp::Failed);
-                    display::show_status_2line(disp, "Enroll", "Failed");
+                    display::show_status_2line(disp, &sb, "Enroll", "Failed");
                 }
                 fp.reactivate();
                 FreeRtos::delay_ms(2000);
                 if connected {
-                    display::show_status(disp, "Connected");
+                    display::show_status(disp, &sb, "Connected");
                 } else {
-                    display::show_pin(disp, passkey);
+                    display::show_pin(disp, &sb, passkey);
                 }
             }
         }
@@ -559,7 +668,7 @@ where
         // Fingerprint — non-blocking poll; blocks ~20 ms only when a finger is detected.
         match fp.poll() {
             Some(fingerprint::IdentifyResult::Match(id)) => {
-                display::show_auth_ok(disp, id);
+                display::show_auth_ok(disp, &sb, id);
 
                 // Fetch secret from NVS
                 let key = format!("slot_{}", id);
@@ -586,7 +695,7 @@ where
                 if let Some(result) = totp_result {
                     match result {
                         Ok(code) => {
-                            display::show_totp(disp, code);
+                            display::show_totp(disp, &sb, code);
                             if connected {
                                 ble.type_digits(&format!("{:06}", code));
                                 log::info!("TOTP typed: {:06}", code);
@@ -602,18 +711,18 @@ where
 
                 FreeRtos::delay_ms(2000);
                 if connected {
-                    display::show_status(disp, "Connected");
+                    display::show_status(disp, &sb, "Connected");
                 } else {
-                    display::show_pin(disp, passkey);
+                    display::show_pin(disp, &sb, passkey);
                 }
             }
             Some(fingerprint::IdentifyResult::NoMatch) => {
-                display::show_no_match(disp);
+                display::show_no_match(disp, &sb);
                 FreeRtos::delay_ms(2000);
                 if connected {
-                    display::show_status(disp, "Connected");
+                    display::show_status(disp, &sb, "Connected");
                 } else {
-                    display::show_pin(disp, passkey);
+                    display::show_pin(disp, &sb, passkey);
                 }
             }
             None => {}

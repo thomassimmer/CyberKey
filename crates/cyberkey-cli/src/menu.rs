@@ -291,9 +291,14 @@ fn action_sync_clock(device: &mut Device) -> anyhow::Result<()> {
         .context("system clock is before UNIX epoch")?
         .as_secs();
 
-    match device.call(&Command::SyncClock { timestamp })? {
+    let tz_offset_secs = chrono::Local::now().offset().local_minus_utc();
+
+    match device.call(&Command::SyncClock {
+        timestamp,
+        tz_offset_secs,
+    })? {
         DeviceMessage::Ok => {
-            println!("  ✓ Device clock synced (Unix timestamp {timestamp}).");
+            println!("  ✓ Device clock synced (Unix timestamp {timestamp}, UTC offset {tz_offset_secs:+}s).");
         }
         DeviceMessage::Error { error } => {
             println!("  ✗ {error}");

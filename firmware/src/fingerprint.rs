@@ -228,7 +228,8 @@ impl<'d> FingerprintSensor<'d> {
         // main.rs delays 2 s after this call, so the LED stays visible long enough.
 
         // Arm smart polling for the next 30 seconds
-        self.smart_poll_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+        self.smart_poll_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
         log::info!("fp: smart poll window start (30s)");
 
         result

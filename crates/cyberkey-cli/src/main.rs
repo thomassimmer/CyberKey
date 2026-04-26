@@ -89,8 +89,12 @@ fn main() -> Result<()> {
         .context("system clock is before the UNIX epoch")?
         .as_secs();
 
-    match device.call(&Command::SyncClock { timestamp: now }) {
-        Ok(_) => println!("  Clock synced with host (t = {now})."),
+    let tz_offset_secs = chrono::Local::now().offset().local_minus_utc();
+    match device.call(&Command::SyncClock {
+        timestamp: now,
+        tz_offset_secs,
+    }) {
+        Ok(_) => println!("  Clock synced with host (t = {now}, UTC offset {tz_offset_secs:+}s)."),
         Err(e) => eprintln!("  Warning: clock sync failed — {e}"),
     }
 

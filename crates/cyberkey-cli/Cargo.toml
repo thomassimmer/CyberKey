@@ -29,3 +29,6 @@ cyberkey-core = { path = "../cyberkey-core" }
 
 # Ergonomic error handling
 anyhow = "1"
+
+# Local timezone offset for sync_clock
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
