@@ -33,10 +33,70 @@ mod display;
 mod fingerprint;
 mod hid;
 
+/// Set by `cmd_sync_clock` in the CLI task; drained by the main loop which
+/// has exclusive access to the I2C bus and can write it to the BM8563.
+pub(crate) static PENDING_RTC_WRITE: std::sync::Mutex<Option<u64>> =
+    std::sync::Mutex::new(None);
+
 use buttons::ButtonEvent;
 
 fn bcd2dec(bcd: u8) -> u8 {
     (bcd >> 4) * 10 + (bcd & 0x0F)
+}
+
+fn dec2bcd(dec: u8) -> u8 {
+    ((dec / 10) << 4) | (dec % 10)
+}
+
+fn timestamp_to_datetime(ts: u64) -> (u16, u8, u8, u8, u8, u8) {
+    let second = (ts % 60) as u8;
+    let minute = ((ts / 60) % 60) as u8;
+    let hour = ((ts / 3600) % 24) as u8;
+    let mut days = (ts / 86400) as u32;
+
+    let mut year = 1970u16;
+    loop {
+        let y_days = if is_leap_year(year as u32) { 366 } else { 365 };
+        if days < y_days {
+            break;
+        }
+        days -= y_days;
+        year += 1;
+    }
+
+    let leap = is_leap_year(year as u32);
+    let month_lens: [u32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1u8;
+    for &len in &month_lens {
+        if days < len {
+            break;
+        }
+        days -= len;
+        month += 1;
+    }
+
+    (year, month, (days + 1) as u8, hour, minute, second)
+}
+
+fn write_rtc(i2c: &mut I2cDriver, ts: u64) {
+    let (year, month, day, hour, minute, second) = timestamp_to_datetime(ts);
+    let buf = [
+        0x02u8,                          // start at register 0x02
+        dec2bcd(second),                 // 0x02: seconds — VL bit=0 clears the flag
+        dec2bcd(minute),                 // 0x03: minutes
+        dec2bcd(hour),                   // 0x04: hours
+        dec2bcd(day),                    // 0x05: days
+        0x00,                            // 0x06: weekday (not critical)
+        dec2bcd(month),                  // 0x07: months (century bit=0 → 2000s)
+        dec2bcd((year - 2000) as u8),    // 0x08: years (00-99 offset from 2000)
+    ];
+    match i2c.write(0x51, &buf, esp_idf_svc::hal::delay::BLOCK) {
+        Ok(()) => log::info!(
+            "RTC written: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            year, month, day, hour, minute, second
+        ),
+        Err(e) => log::warn!("RTC write failed: {:?}", e),
+    }
 }
 
 const MONTH_DAYS: [u32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
@@ -66,8 +126,11 @@ fn init_rtc(i2c: &mut I2cDriver) -> anyhow::Result<()> {
 
     let vl = buf[0] & 0x80;
     if vl != 0 {
-        log::warn!("RTC voltage low (unset), using compile time");
-        return fallback_time();
+        log::warn!("RTC voltage low (unset), syncing RTC from compile time");
+        let ts: u64 = env!("BUILD_TIME").parse().unwrap_or(0);
+        set_system_time(ts);
+        write_rtc(i2c, ts); // clears VL bit so next boot reads a valid time
+        return Ok(());
     }
 
     let sec = bcd2dec(buf[0] & 0x7F);
@@ -319,6 +382,7 @@ fn main() -> anyhow::Result<()> {
         &mut fp,
         nvs,
         enroll_queue,
+        &mut i2c_driver,
     )?;
 
     Ok(())
@@ -335,6 +399,7 @@ fn main_loop<D, A, B, C, P, BL>(
     fp: &mut fingerprint::FingerprintSensor<'_>,
     nvs: Arc<Mutex<cli::SharedNvs>>,
     enroll_queue: cli::EnrollQueue,
+    i2c: &mut I2cDriver<'_>,
 ) -> anyhow::Result<()>
 where
     D: embedded_graphics::draw_target::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
@@ -348,6 +413,13 @@ where
     let mut pending_bond_clear = false;
 
     loop {
+        // Drain any pending RTC write requested by the CLI task.
+        if let Ok(mut guard) = PENDING_RTC_WRITE.lock() {
+            if let Some(ts) = guard.take() {
+                write_rtc(i2c, ts);
+            }
+        }
+
         let connected = ble_hid::CONNECTED.load(Ordering::Relaxed);
 
         if connected != last_connected {

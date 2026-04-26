@@ -447,6 +447,11 @@ fn cmd_sync_clock(cmd: &Cmd) -> Resp {
     unsafe {
         esp_idf_svc::sys::settimeofday(&tv, core::ptr::null());
     }
+    // Signal the main loop to write this timestamp to the BM8563 hardware
+    // so the correct time survives a reboot.
+    if let Ok(mut guard) = crate::PENDING_RTC_WRITE.lock() {
+        *guard = Some(ts);
+    }
     log::info!("CLI: system clock set to {ts}");
     Resp::ok()
 }
