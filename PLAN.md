@@ -1412,9 +1412,9 @@ This step covers the remaining work to reach a fully functional CyberKey v0.1.
 - [x] Run CLI listener in a FreeRTOS task so it doesn't block the main loop
 
 **8.4 — `add_entry` integration** *(Phase 2 + 5)*
-- [ ] `add_entry` command: firmware receives `{slot_id, totp_secret}` → launches `PS_AutoEnroll` → stores secret in NVS → replies `{ok: true}`
-- [ ] Replace button-based enrollment (8.1) with this flow as the primary path
-- [ ] `cyberkey-cli` `add_entry` menu option now drives the full flow end-to-end
+- [x] `add_entry` command: firmware receives `{slot_id, totp_secret}` → launches `PS_AutoEnroll` → stores secret in NVS → replies `{ok: true}`
+- [x] Replace button-based enrollment (8.1) with this flow as the primary path
+- [x] `cyberkey-cli` `add_entry` menu option now drives the full flow end-to-end
 
 **8.5 — Factory reset** *(Phase 2 + 5)*
 - [ ] CLI `factory_reset` command: confirm `"RESET"` string → `PS_Empty` + erase NVS → reboot

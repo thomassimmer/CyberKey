@@ -159,23 +159,29 @@ impl Device {
         Ok(())
     }
 
-    /// Reads exactly one newline-terminated JSON line from the serial port and
-    /// decodes it into a [`DeviceMessage`].
+    /// Reads the next JSON response line from the serial port.
     ///
-    /// Blocks until a complete line arrives or the configured timeout expires.
+    /// Firmware log lines (produced by EspLogger on the same UART) are
+    /// silently skipped — only lines that start with `{` are decoded.
+    ///
+    /// Blocks until a JSON line arrives or the configured timeout expires.
     ///
     /// # Errors
     ///
     /// - Read timeout or OS I/O error.
     /// - JSON parse or structural decode error from [`protocol::decode_response`].
     pub fn recv(&mut self) -> Result<DeviceMessage> {
-        let mut line = String::new();
-        self.reader
-            .read_line(&mut line)
-            .context("serial read failed")?;
-        // Strip the line-ending before handing to the decoder.
-        let trimmed = line.trim_end_matches(['\n', '\r']);
-        protocol::decode_response(trimmed.as_bytes())
+        loop {
+            let mut line = String::new();
+            self.reader
+                .read_line(&mut line)
+                .context("serial read failed")?;
+            let trimmed = line.trim_end_matches(['\n', '\r']).trim();
+            if trimmed.starts_with('{') {
+                return protocol::decode_response(trimmed.as_bytes());
+            }
+            // Skip firmware log lines (e.g. "I (1234) cli: ...").
+        }
     }
 
     // ── High-level request/response ───────────────────────────────────────────

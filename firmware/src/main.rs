@@ -125,9 +125,8 @@ fn main() -> anyhow::Result<()> {
     let nvs_inner = EspNvs::new(default_partition, "ck", true)?;
     let nvs = Arc::new(Mutex::new(cli::SharedNvs(nvs_inner)));
 
-    // Hardcode a test secret for initial validation, replace with CLI flow in 8.4
-    let test_secret = "JBSWY3DPEHPK3PXP";
-    let _ = nvs.lock().unwrap().0.set_str("slot_0", test_secret);
+    // Enrollment IPC queue — CLI task posts a request here; main loop picks it up.
+    let enroll_queue: cli::EnrollQueue = Arc::new(Mutex::new(None));
 
     // UART0 (USB-serial, GPIO1=TX / GPIO3=RX) — CLI wire protocol listener.
     // Safety: transmute to 'static is valid because the peripheral registers
@@ -142,7 +141,7 @@ fn main() -> anyhow::Result<()> {
         &uart_cfg,
     )?;
     let uart0: esp_idf_svc::hal::uart::UartDriver<'static> = unsafe { core::mem::transmute(uart0) };
-    cli::spawn(uart0, nvs.clone())?;
+    cli::spawn(uart0, nvs.clone(), enroll_queue.clone())?;
 
     // RTC init (I2C0 on GPIO21/22)
     let i2c = peripherals.i2c0;
@@ -248,7 +247,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     main_loop(
-        &ble, &mut disp, buttons, passkey, power_pin, backlight, &mut fp, nvs,
+        &ble, &mut disp, buttons, passkey, power_pin, backlight, &mut fp, nvs, enroll_queue,
     )?;
 
     Ok(())
@@ -264,6 +263,7 @@ fn main_loop<D, A, B, C, P, BL>(
     _backlight: PinDriver<'_, BL, Output>,
     fp: &mut fingerprint::FingerprintSensor<'_>,
     nvs: Arc<Mutex<cli::SharedNvs>>,
+    enroll_queue: cli::EnrollQueue,
 ) -> anyhow::Result<()>
 where
     D: embedded_graphics::draw_target::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
@@ -312,53 +312,7 @@ where
             }
             Some(ButtonEvent::BLongPress) => {
                 pending_bond_clear = false;
-                const ENROLL_SLOT: u16 = 0;
-                const ENROLL_PASSES: u8 = 3;
-                display::show_enroll_pass(disp, 1, ENROLL_PASSES);
-                if fp.begin_enroll(ENROLL_SLOT, ENROLL_PASSES) {
-                    let mut pass = 0u8;
-                    let mut failed = false;
-
-                    loop {
-                        match fp.poll_enroll_ack() {
-                            fingerprint::EnrollAck::CaptureOk => {
-                                pass += 1;
-                                if pass < ENROLL_PASSES {
-                                    // Sensor confirmed finger lifted; prompt user to
-                                    // reposition before the next capture.
-                                    display::show_status_2line(disp, "Lift finger!", "reposition");
-                                    FreeRtos::delay_ms(1500);
-                                    display::show_enroll_pass(disp, pass + 1, ENROLL_PASSES);
-                                } else {
-                                    display::show_status(disp, "Processing...");
-                                }
-                            }
-                            fingerprint::EnrollAck::Done => break,
-                            fingerprint::EnrollAck::Failed => {
-                                failed = true;
-                                break;
-                            }
-                            fingerprint::EnrollAck::Pending => {}
-                        }
-                        FreeRtos::delay_ms(20);
-                    }
-
-                    if !failed {
-                        display::show_enroll_ok(disp, ENROLL_SLOT);
-                    } else {
-                        display::show_status_2line(disp, "Enroll", "Failed");
-                    }
-                } else {
-                    display::show_status_2line(disp, "Enroll", "Failed");
-                }
-                // Re-arm the sensor for autonomous detection after enrollment.
-                fp.reactivate();
-                FreeRtos::delay_ms(2000);
-                if connected {
-                    display::show_status(disp, "Connected");
-                } else {
-                    display::show_pin(disp, passkey);
-                }
+                // Enrollment is now driven exclusively by the CLI (add_entry command).
             }
             Some(ButtonEvent::BShortPress) => {
                 pending_bond_clear = false;
@@ -382,6 +336,65 @@ where
             display::show_status(disp, "Clearing...");
             FreeRtos::delay_ms(500);
             ble_hid::clear_bonds_and_reboot();
+        }
+
+        // CLI-driven enrollment: pick up a pending EnrollRequest from the CLI task.
+        if let Ok(mut eq) = enroll_queue.try_lock() {
+            if let Some(request) = eq.take() {
+                drop(eq); // release lock before the blocking enrollment loop
+                const PASSES: u8 = 3;
+                display::show_status_2line(disp, "CLI Enroll", "Place finger");
+                if fp.begin_enroll(request.slot, PASSES) {
+                    let _ = request.reply.send(cli::EnrollResp::PlaceFinger { step: 1, total: PASSES });
+                    let mut pass = 0u8;
+                    loop {
+                        match fp.poll_enroll_ack() {
+                            fingerprint::EnrollAck::CaptureOk => {
+                                pass += 1;
+                                let _ = request.reply.send(cli::EnrollResp::LiftFinger {
+                                    step: pass,
+                                    total: PASSES,
+                                });
+                                if pass < PASSES {
+                                    let _ = request.reply.send(cli::EnrollResp::PlaceFinger {
+                                        step: pass + 1,
+                                        total: PASSES,
+                                    });
+                                    display::show_status_2line(
+                                        disp,
+                                        "Lift + replace",
+                                        &format!("pass {}/{}", pass + 1, PASSES),
+                                    );
+                                } else {
+                                    display::show_status(disp, "Processing...");
+                                }
+                            }
+                            fingerprint::EnrollAck::Done => {
+                                let _ = request.reply.send(cli::EnrollResp::Done);
+                                display::show_enroll_ok(disp, request.slot);
+                                break;
+                            }
+                            fingerprint::EnrollAck::Failed => {
+                                let _ = request.reply.send(cli::EnrollResp::Failed);
+                                display::show_status_2line(disp, "Enroll", "Failed");
+                                break;
+                            }
+                            fingerprint::EnrollAck::Pending => {}
+                        }
+                        FreeRtos::delay_ms(20);
+                    }
+                } else {
+                    let _ = request.reply.send(cli::EnrollResp::Failed);
+                    display::show_status_2line(disp, "Enroll", "Failed");
+                }
+                fp.reactivate();
+                FreeRtos::delay_ms(2000);
+                if connected {
+                    display::show_status(disp, "Connected");
+                } else {
+                    display::show_pin(disp, passkey);
+                }
+            }
         }
 
         // Fingerprint — non-blocking poll; blocks ~20 ms only when a finger is detected.
