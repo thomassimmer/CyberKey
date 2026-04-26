@@ -89,7 +89,7 @@ struct Cmd {
 struct Resp {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    msg: Option<String>,
+    error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     entries: Option<Vec<SlotEntry>>,
     /// Returned by `add_entry` on success.
@@ -120,16 +120,7 @@ impl Resp {
     fn ok() -> Self {
         Resp {
             ok: true,
-            msg: None,
-            entries: None,
-            slot: None,
-            code: None,
-        }
-    }
-    fn ok_msg(msg: impl Into<String>) -> Self {
-        Resp {
-            ok: true,
-            msg: Some(msg.into()),
+            error: None,
             entries: None,
             slot: None,
             code: None,
@@ -138,7 +129,7 @@ impl Resp {
     fn ok_slot(slot: u8) -> Self {
         Resp {
             ok: true,
-            msg: None,
+            error: None,
             entries: None,
             slot: Some(slot),
             code: None,
@@ -147,7 +138,7 @@ impl Resp {
     fn ok_code(code: u32) -> Self {
         Resp {
             ok: true,
-            msg: None,
+            error: None,
             entries: None,
             slot: None,
             code: Some(code),
@@ -156,7 +147,7 @@ impl Resp {
     fn err(msg: impl Into<String>) -> Self {
         Resp {
             ok: false,
-            msg: Some(msg.into()),
+            error: Some(msg.into()),
             entries: None,
             slot: None,
             code: None,
@@ -252,14 +243,14 @@ fn handle_command(
 
 fn dispatch(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     match cmd.cmd.as_str() {
-        "ping" => Resp::ok_msg("pong"),
+        "ping" => Resp::ok(),
         "list_entries" => cmd_list_entries(nvs),
         "remove_entry" => cmd_remove_entry(cmd, nvs),
         "delete_entry" => cmd_delete_entry_by_slot(cmd, nvs),
         "generate_totp" => cmd_generate_totp(cmd, nvs),
         "sync_clock" => cmd_sync_clock(cmd, nvs),
         "factory_reset" => cmd_factory_reset(cmd, nvs),
-        "allow_pairing" => Resp::ok_msg("not yet implemented"),
+        "allow_pairing" => Resp::ok(),
         other => Resp::err(format!("unknown cmd: {other}")),
     }
 }
@@ -377,7 +368,7 @@ fn cmd_list_entries(nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     }
     Resp {
         ok: true,
-        msg: None,
+        error: None,
         entries: Some(entries),
         slot: None,
         code: None,
