@@ -22,12 +22,12 @@ use std::sync::{
 
 use esp_idf_svc::{
     hal::{delay::BLOCK, uart::UartDriver},
-    nvs::{EspNvs, NvsDefault},
+    nvs::{EspNvs, NvsEncrypted},
 };
 use serde::{Deserialize, Serialize};
 
 /// Newtype that lets `EspNvs` cross thread boundaries under a `Mutex`.
-pub struct SharedNvs(pub EspNvs<NvsDefault>);
+pub struct SharedNvs(pub EspNvs<NvsEncrypted>);
 // Safety: access is serialised by the surrounding Mutex.
 unsafe impl Send for SharedNvs {}
 

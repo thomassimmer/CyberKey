@@ -41,6 +41,9 @@ mipidsi           = "0.10.0"
 embedded-graphics = "0.8"
 embedded-hal      = "1.0.0"
 
+[package.metadata.espflash]
+partition_table = "partitions.csv"
+
 [build-dependencies]
 # Locates the ESP-IDF toolchain and emits linker flags at build time.
 embuild = { version = "0.33", features = ["espidf"] }

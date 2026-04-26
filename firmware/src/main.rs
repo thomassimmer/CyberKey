@@ -18,7 +18,7 @@ use esp_idf_svc::{
         uart::{config::Config as UartConfig, UartDriver},
         units::Hertz,
     },
-    nvs::{EspDefaultNvsPartition, EspNvs},
+    nvs::{EspNvs, EspNvsPartition, NvsEncrypted},
     sys::link_patches,
 };
 use mipidsi::{
@@ -121,8 +121,20 @@ fn main() -> anyhow::Result<()> {
     power_pin.set_high()?;
 
     // NVS init — wrapped in Arc<Mutex> so the CLI task can share it.
-    let default_partition = EspDefaultNvsPartition::take()?;
-    let nvs_inner = EspNvs::new(default_partition, "ck", true)?;
+    // nvs_keys partition holds the AES-256 key generated on first boot; nvs holds encrypted data.
+    let nvs_partition = match EspNvsPartition::<NvsEncrypted>::take("nvs", Some("nvs_keys")) {
+        Ok(p) => p,
+        Err(e) => {
+            // Existing unencrypted data causes secure init to fail — erase and reinitialise.
+            log::warn!(
+                "Encrypted NVS init failed ({:?}), erasing partition and retrying",
+                e
+            );
+            unsafe { esp_idf_svc::sys::nvs_flash_erase_partition(c"nvs".as_ptr()) };
+            EspNvsPartition::<NvsEncrypted>::take("nvs", Some("nvs_keys"))?
+        }
+    };
+    let nvs_inner = EspNvs::new(nvs_partition, "ck", true)?;
     let nvs = Arc::new(Mutex::new(cli::SharedNvs(nvs_inner)));
 
     // Enrollment IPC queue — CLI task posts a request here; main loop picks it up.

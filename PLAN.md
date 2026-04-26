@@ -1421,13 +1421,13 @@ This step covers the remaining work to reach a fully functional CyberKey v0.1.
 - [x] Physical fallback: hold Button A 5 s at boot → same sequence (second press to confirm)
 
 **8.6 — Clock sync via CLI** *(Phase 3)*
-- [ ] `sync_clock` CLI command sends current Unix timestamp → firmware writes to BM8563 RTC via I2C
-- [ ] Replaces the compile-time fallback used in 8.2
+- [x] `sync_clock` CLI command sends current Unix timestamp → firmware writes to BM8563 RTC via I2C
+- [x] Replaces the compile-time fallback used in 8.2
 
 **8.7 — NVS encryption** *(risk Medium — target v0.2 if Rust API unavailable)*
-- [ ] Investigate `nvs_flash_secure_init` availability in `esp-idf-svc`
-- [ ] If available: enable on first boot, burn AES-256 key to eFuse
-- [ ] If not: document threat model (physical flash dump exposes secrets), ship v0.1 unencrypted
+- [x] Investigate `nvs_flash_secure_init` availability in `esp-idf-svc`
+- [x] If available: enable on first boot, burn AES-256 key to eFuse
+- [x] If not: document threat model (physical flash dump exposes secrets), ship v0.1 unencrypted
 
 ---
 

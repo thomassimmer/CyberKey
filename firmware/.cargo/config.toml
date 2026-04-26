@@ -1,6 +1,6 @@
 [target.xtensa-esp32-espidf]
 linker = "ldproxy"
-runner = "espflash flash --monitor"
+runner = "espflash flash --partition-table partitions.csv --monitor"
 rustflags = ["--cfg", "espidf_time64"]
 
 [build]
