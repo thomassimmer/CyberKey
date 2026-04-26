@@ -110,19 +110,49 @@ struct EnrollEvent {
 
 impl Resp {
     fn ok() -> Self {
-        Resp { ok: true, msg: None, entries: None, slot: None, code: None }
+        Resp {
+            ok: true,
+            msg: None,
+            entries: None,
+            slot: None,
+            code: None,
+        }
     }
     fn ok_msg(msg: impl Into<String>) -> Self {
-        Resp { ok: true, msg: Some(msg.into()), entries: None, slot: None, code: None }
+        Resp {
+            ok: true,
+            msg: Some(msg.into()),
+            entries: None,
+            slot: None,
+            code: None,
+        }
     }
     fn ok_slot(slot: u8) -> Self {
-        Resp { ok: true, msg: None, entries: None, slot: Some(slot), code: None }
+        Resp {
+            ok: true,
+            msg: None,
+            entries: None,
+            slot: Some(slot),
+            code: None,
+        }
     }
     fn ok_code(code: u32) -> Self {
-        Resp { ok: true, msg: None, entries: None, slot: None, code: Some(code) }
+        Resp {
+            ok: true,
+            msg: None,
+            entries: None,
+            slot: None,
+            code: Some(code),
+        }
     }
     fn err(msg: impl Into<String>) -> Self {
-        Resp { ok: false, msg: Some(msg.into()), entries: None, slot: None, code: None }
+        Resp {
+            ok: false,
+            msg: Some(msg.into()),
+            entries: None,
+            slot: None,
+            code: None,
+        }
     }
 }
 
@@ -251,7 +281,10 @@ fn cmd_add_entry(
         let mut guard = nvs.lock().unwrap();
         let mut probe = [0u8; 65];
         let free = (0u32..10).find(|&s| {
-            !matches!(guard.0.get_str(&format!("slot_{s}"), &mut probe), Ok(Some(_)))
+            !matches!(
+                guard.0.get_str(&format!("slot_{s}"), &mut probe),
+                Ok(Some(_))
+            )
         });
         let Some(s) = free else {
             return write_resp(uart, &Resp::err("no free slot"));
@@ -268,7 +301,10 @@ fn cmd_add_entry(
 
     // Hand the enrollment request to the main loop.
     let (tx, rx) = mpsc::sync_channel(16);
-    *enroll_queue.lock().unwrap() = Some(EnrollRequest { slot: slot as u16, reply: tx });
+    *enroll_queue.lock().unwrap() = Some(EnrollRequest {
+        slot: slot as u16,
+        reply: tx,
+    });
 
     // Stream enrollment progress events over serial until done or failed.
     loop {
@@ -276,13 +312,23 @@ fn cmd_add_entry(
             Ok(EnrollResp::PlaceFinger { step, total }) => {
                 write_event(
                     uart,
-                    &EnrollEvent { event: "enroll_step", step, total, state: "place_finger" },
+                    &EnrollEvent {
+                        event: "enroll_step",
+                        step,
+                        total,
+                        state: "place_finger",
+                    },
                 );
             }
             Ok(EnrollResp::LiftFinger { step, total }) => {
                 write_event(
                     uart,
-                    &EnrollEvent { event: "enroll_step", step, total, state: "lift_finger" },
+                    &EnrollEvent {
+                        event: "enroll_step",
+                        step,
+                        total,
+                        state: "lift_finger",
+                    },
                 );
             }
             Ok(EnrollResp::Done) => {
@@ -314,10 +360,20 @@ fn cmd_list_entries(nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
             };
             let visible: String = secret.chars().take(4).collect();
             let secret_masked = format!("{}{}", visible, "*".repeat(20));
-            entries.push(SlotEntry { slot: slot as u8, label, secret_masked });
+            entries.push(SlotEntry {
+                slot: slot as u8,
+                label,
+                secret_masked,
+            });
         }
     }
-    Resp { ok: true, msg: None, entries: Some(entries), slot: None, code: None }
+    Resp {
+        ok: true,
+        msg: None,
+        entries: Some(entries),
+        slot: None,
+        code: None,
+    }
 }
 
 /// `remove_entry` — removes an entry by its service label (case-sensitive).
@@ -377,9 +433,14 @@ fn cmd_sync_clock(cmd: &Cmd) -> Resp {
     let Some(ts) = cmd.timestamp.or(cmd.ts) else {
         return Resp::err("missing field: timestamp");
     };
-    let tv = esp_idf_svc::sys::timeval { tv_sec: ts as _, tv_usec: 0 };
+    let tv = esp_idf_svc::sys::timeval {
+        tv_sec: ts as _,
+        tv_usec: 0,
+    };
     // Safety: settimeofday is always safe to call; null timezone = UTC.
-    unsafe { esp_idf_svc::sys::settimeofday(&tv, core::ptr::null()); }
+    unsafe {
+        esp_idf_svc::sys::settimeofday(&tv, core::ptr::null());
+    }
     log::info!("CLI: system clock set to {ts}");
     Resp::ok()
 }

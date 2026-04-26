@@ -247,7 +247,15 @@ fn main() -> anyhow::Result<()> {
     );
 
     main_loop(
-        &ble, &mut disp, buttons, passkey, power_pin, backlight, &mut fp, nvs, enroll_queue,
+        &ble,
+        &mut disp,
+        buttons,
+        passkey,
+        power_pin,
+        backlight,
+        &mut fp,
+        nvs,
+        enroll_queue,
     )?;
 
     Ok(())
@@ -345,7 +353,10 @@ where
                 const PASSES: u8 = 3;
                 display::show_status_2line(disp, "CLI Enroll", "Place finger");
                 if fp.begin_enroll(request.slot, PASSES) {
-                    let _ = request.reply.send(cli::EnrollResp::PlaceFinger { step: 1, total: PASSES });
+                    let _ = request.reply.send(cli::EnrollResp::PlaceFinger {
+                        step: 1,
+                        total: PASSES,
+                    });
                     let mut pass = 0u8;
                     loop {
                         match fp.poll_enroll_ack() {
