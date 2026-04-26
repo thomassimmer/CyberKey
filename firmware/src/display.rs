@@ -28,11 +28,7 @@ pub fn show_status<D: DrawTarget<Color = Rgb565>>(display: &mut D, msg: &str) {
 }
 
 /// Show a two-line status message centred on a black screen (smaller font).
-pub fn show_status_2line<D: DrawTarget<Color = Rgb565>>(
-    display: &mut D,
-    line1: &str,
-    line2: &str,
-) {
+pub fn show_status_2line<D: DrawTarget<Color = Rgb565>>(display: &mut D, line1: &str, line2: &str) {
     let _ = display.clear(Rgb565::BLACK);
     let style = MonoTextStyle::new(&FONT_6X13, Rgb565::WHITE);
     let ts = TextStyleBuilder::new().alignment(Alignment::Center).build();
@@ -133,11 +129,6 @@ pub fn show_pin<D: DrawTarget<Color = Rgb565>>(display: &mut D, pin: u32) {
 
     let pin_str = format!("{:03} {:03}", pin / 1000, pin % 1000);
     let pin_style = MonoTextStyle::new(&FONT_10X20, Rgb565::YELLOW);
-    let _ = Text::with_text_style(
-        &pin_str,
-        Point::new(cx, cy + 10),
-        pin_style,
-        ts_center,
-    )
-    .draw(display);
+    let _ = Text::with_text_style(&pin_str, Point::new(cx, cy + 10), pin_style, ts_center)
+        .draw(display);
 }

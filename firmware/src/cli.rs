@@ -14,10 +14,7 @@
 use std::sync::{Arc, Mutex};
 
 use esp_idf_svc::{
-    hal::{
-        delay::BLOCK,
-        uart::UartDriver,
-    },
+    hal::{delay::BLOCK, uart::UartDriver},
     nvs::{EspNvs, NvsDefault},
 };
 use serde::{Deserialize, Serialize};
@@ -55,13 +52,25 @@ struct SlotEntry {
 
 impl Resp {
     fn ok() -> Self {
-        Resp { ok: true, msg: None, entries: None }
+        Resp {
+            ok: true,
+            msg: None,
+            entries: None,
+        }
     }
     fn ok_msg(msg: impl Into<String>) -> Self {
-        Resp { ok: true, msg: Some(msg.into()), entries: None }
+        Resp {
+            ok: true,
+            msg: Some(msg.into()),
+            entries: None,
+        }
     }
     fn err(msg: impl Into<String>) -> Self {
-        Resp { ok: false, msg: Some(msg.into()), entries: None }
+        Resp {
+            ok: false,
+            msg: Some(msg.into()),
+            entries: None,
+        }
     }
 }
 
@@ -148,7 +157,11 @@ fn cmd_list_entries(nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
             entries.push(SlotEntry { slot });
         }
     }
-    Resp { ok: true, msg: None, entries: Some(entries) }
+    Resp {
+        ok: true,
+        msg: None,
+        entries: Some(entries),
+    }
 }
 
 fn cmd_delete_entry(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
@@ -168,7 +181,10 @@ fn cmd_sync_clock(cmd: &Cmd) -> Resp {
     let Some(ts) = cmd.ts else {
         return Resp::err("missing field: ts");
     };
-    let tv = esp_idf_svc::sys::timeval { tv_sec: ts as _, tv_usec: 0 };
+    let tv = esp_idf_svc::sys::timeval {
+        tv_sec: ts as _,
+        tv_usec: 0,
+    };
     // Safety: settimeofday is always safe to call; null timezone = UTC.
     unsafe {
         esp_idf_svc::sys::settimeofday(&tv, core::ptr::null());

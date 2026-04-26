@@ -383,10 +383,7 @@ where
     /// - `security_level` — match threshold (1 = most permissive, 5 = strictest).
     ///
     /// Returns `Ok((page_id, score))` on a match.
-    pub fn auto_identify(
-        &mut self,
-        security_level: u8,
-    ) -> Result<(u16, u16), FingerprintError<E>> {
+    pub fn auto_identify(&mut self, security_level: u8) -> Result<(u16, u16), FingerprintError<E>> {
         // U203 protocol requires: [opcode, level, start_page_hi, start_page_lo, capacity_hi, capacity_lo].
         // Start 0 (0x0000), Capacity 200 (0x00C8) = search all 200 slots.
         self.send_command(&[PS_AUTO_IDENTIFY, security_level, 0x00, 0x00, 0x00, 0xC8])?;

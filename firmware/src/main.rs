@@ -3,7 +3,10 @@
 //! BLE HID keyboard via esp32-nimble (NimBLE over ESP-IDF).
 //! The NimBLE host task runs inside FreeRTOS; `fn main()` is the user task.
 
-use std::{sync::{atomic::Ordering, Arc, Mutex}, time::Duration};
+use std::{
+    sync::{atomic::Ordering, Arc, Mutex},
+    time::Duration,
+};
 
 use esp_idf_svc::{
     hal::{
@@ -78,7 +81,13 @@ fn init_rtc(i2c: &mut I2cDriver) -> anyhow::Result<()> {
     let ts = rtc_to_timestamp(year, month, day, hour, min, sec);
     log::info!(
         "RTC: {:04}-{:02}-{:02} {:02}:{:02}:{:02} -> ts={}",
-        year, month, day, hour, min, sec, ts
+        year,
+        month,
+        day,
+        hour,
+        min,
+        sec,
+        ts
     );
     set_system_time(ts);
     Ok(())
@@ -132,8 +141,7 @@ fn main() -> anyhow::Result<()> {
         Option::<AnyIOPin>::None,
         &uart_cfg,
     )?;
-    let uart0: esp_idf_svc::hal::uart::UartDriver<'static> =
-        unsafe { core::mem::transmute(uart0) };
+    let uart0: esp_idf_svc::hal::uart::UartDriver<'static> = unsafe { core::mem::transmute(uart0) };
     cli::spawn(uart0, nvs.clone())?;
 
     // RTC init (I2C0 on GPIO21/22)
