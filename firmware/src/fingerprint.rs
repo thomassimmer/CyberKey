@@ -193,9 +193,8 @@ impl<'d> FingerprintSensor<'d> {
     /// a non-autonomous state. Mirrors what `begin_enroll` does up-front.
     pub fn reactivate(&mut self) {
         self.driver.drain_rx();
-        // Au lieu d'envoyer activate() (qui maintient le capteur réveillé et "sourd" pendant 10s),
-        // on lance directement une grande fenêtre de Smart Polling de 10 secondes.
-        // Cela te permet de tester ton empreinte fraîchement enregistrée tout de suite !
+        // Skip activate() (which keeps the sensor awake but deaf for ~10s) and go straight
+        // to a smart-poll window so a freshly enrolled finger can be tested immediately.
         self.smart_poll_until =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
         log::info!("fp: reactivate -> smart poll armed for 10s after enrollment");
@@ -225,13 +224,12 @@ impl<'d> FingerprintSensor<'d> {
             }
         };
 
-        // On ne force plus la LED à s'éteindre ni on ne réactive le capteur ici !
-        // Le capteur gère sa LED de résultat (vert/rouge) tout seul.
-        // Comme main.rs fait un delay_ms(2000) juste après, la LED restera visible 2 secondes.
+        // The sensor drives its result LED (green/red) autonomously; no need to force it off.
+        // main.rs delays 2 s after this call, so the LED stays visible long enough.
 
-        // Armer le Smart Polling pour les 5 prochaines secondes
-        self.smart_poll_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
-        log::info!("fp: smart poll window start (5s)");
+        // Arm smart polling for the next 30 seconds
+        self.smart_poll_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+        log::info!("fp: smart poll window start (30s)");
 
         result
     }
@@ -244,10 +242,10 @@ impl<'d> FingerprintSensor<'d> {
             return None;
         }
 
-        // 1. SMART POLLING WINDOW (si active)
+        // 1. SMART POLLING WINDOW (if active)
         if let Some(until) = self.smart_poll_until {
             if std::time::Instant::now() > until {
-                // Le temps est écoulé, on laisse le capteur s'endormir
+                // Window expired — let the sensor go to sleep on its own
                 self.smart_poll_until = None;
                 log::info!("fp: smart poll window expired, sensor will sleep in ~10s");
             } else {
@@ -258,7 +256,7 @@ impl<'d> FingerprintSensor<'d> {
                         return self.execute_auto_identify("smart_poll");
                     }
                     Err(FingerprintError::SensorError(2)) => {
-                        // Pas de doigt, on continue de scruter silencieusement
+                        // No finger — keep polling silently
                         return None;
                     }
                     Err(e) => {
@@ -269,7 +267,7 @@ impl<'d> FingerprintSensor<'d> {
             }
         }
 
-        // 2. WAKEUP AUTONOME
+        // 2. AUTONOMOUS WAKEUP
         match self.driver.poll_event() {
             Ok(DriverEvent::Wakeup) => {
                 log::info!("fp: autonomous wakeup");
