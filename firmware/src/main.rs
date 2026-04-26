@@ -3,7 +3,7 @@
 //! BLE HID keyboard via esp32-nimble (NimBLE over ESP-IDF).
 //! The NimBLE host task runs inside FreeRTOS; `fn main()` is the user task.
 
-use std::{sync::atomic::Ordering, time::Duration};
+use std::{sync::{atomic::Ordering, Arc, Mutex}, time::Duration};
 
 use esp_idf_svc::{
     hal::{
@@ -12,9 +12,10 @@ use esp_idf_svc::{
         i2c::{I2cConfig, I2cDriver},
         peripherals::Peripherals,
         spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
+        uart::{config::Config as UartConfig, UartDriver},
         units::Hertz,
     },
-    nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
+    nvs::{EspDefaultNvsPartition, EspNvs},
     sys::link_patches,
 };
 use mipidsi::{
@@ -24,6 +25,7 @@ use mipidsi::{
 
 mod ble_hid;
 mod buttons;
+mod cli;
 mod display;
 mod fingerprint;
 mod hid;
@@ -109,13 +111,30 @@ fn main() -> anyhow::Result<()> {
     let mut power_pin = PinDriver::output(peripherals.pins.gpio4)?;
     power_pin.set_high()?;
 
-    // NVS init
+    // NVS init — wrapped in Arc<Mutex> so the CLI task can share it.
     let default_partition = EspDefaultNvsPartition::take()?;
-    let mut nvs = EspNvs::new(default_partition, "ck", true)?;
+    let nvs_inner = EspNvs::new(default_partition, "ck", true)?;
+    let nvs = Arc::new(Mutex::new(cli::SharedNvs(nvs_inner)));
 
     // Hardcode a test secret for initial validation, replace with CLI flow in 8.4
     let test_secret = "JBSWY3DPEHPK3PXP";
-    let _ = nvs.set_str("slot_0", test_secret);
+    let _ = nvs.lock().unwrap().0.set_str("slot_0", test_secret);
+
+    // UART0 (USB-serial, GPIO1=TX / GPIO3=RX) — CLI wire protocol listener.
+    // Safety: transmute to 'static is valid because the peripheral registers
+    // exist for the entire program lifetime on bare-metal.
+    let uart_cfg = UartConfig::new().baudrate(Hertz(115_200));
+    let uart0 = UartDriver::new(
+        peripherals.uart0,
+        peripherals.pins.gpio1,
+        peripherals.pins.gpio3,
+        Option::<AnyIOPin>::None,
+        Option::<AnyIOPin>::None,
+        &uart_cfg,
+    )?;
+    let uart0: esp_idf_svc::hal::uart::UartDriver<'static> =
+        unsafe { core::mem::transmute(uart0) };
+    cli::spawn(uart0, nvs.clone())?;
 
     // RTC init (I2C0 on GPIO21/22)
     let i2c = peripherals.i2c0;
@@ -221,7 +240,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     main_loop(
-        &ble, &mut disp, buttons, passkey, power_pin, backlight, &mut fp, &mut nvs,
+        &ble, &mut disp, buttons, passkey, power_pin, backlight, &mut fp, nvs,
     )?;
 
     Ok(())
@@ -236,7 +255,7 @@ fn main_loop<D, A, B, C, P, BL>(
     mut power_pin: PinDriver<'_, P, Output>,
     _backlight: PinDriver<'_, BL, Output>,
     fp: &mut fingerprint::FingerprintSensor<'_>,
-    nvs: &mut EspNvs<NvsDefault>,
+    nvs: Arc<Mutex<cli::SharedNvs>>,
 ) -> anyhow::Result<()>
 where
     D: embedded_graphics::draw_target::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
@@ -365,29 +384,39 @@ where
                 // Fetch secret from NVS
                 let key = format!("slot_{}", id);
                 let mut buf = [0u8; 65];
-                match nvs.get_str(&key, &mut buf) {
-                    Ok(Some(secret)) => {
-                        let now = unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64;
-                        match cyberkey_core::generate_totp(secret, now) {
-                            Ok(code) => {
-                                display::show_totp(disp, code);
-                                if connected {
-                                    ble.type_digits(&format!("{:06}", code));
-                                    log::info!("TOTP typed: {:06}", code);
-                                } else {
-                                    log::info!("TOTP generated (not connected): {:06}", code);
-                                }
-                            }
-                            Err(e) => {
-                                log::warn!("TOTP error: {:?}", e);
-                            }
+                let totp_result = {
+                    let guard = nvs.lock().unwrap();
+                    match guard.0.get_str(&key, &mut buf) {
+                        Ok(Some(secret)) => {
+                            let now =
+                                unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64;
+                            Some(cyberkey_core::generate_totp(secret, now))
+                        }
+                        Ok(None) => {
+                            log::warn!("No secret found for slot {}", id);
+                            None
+                        }
+                        Err(e) => {
+                            log::warn!("NVS read error: {:?}", e);
+                            None
                         }
                     }
-                    Ok(None) => {
-                        log::warn!("No secret found for slot {}", id);
-                    }
-                    Err(e) => {
-                        log::warn!("NVS read error: {:?}", e);
+                }; // guard dropped here
+
+                if let Some(result) = totp_result {
+                    match result {
+                        Ok(code) => {
+                            display::show_totp(disp, code);
+                            if connected {
+                                ble.type_digits(&format!("{:06}", code));
+                                log::info!("TOTP typed: {:06}", code);
+                            } else {
+                                log::info!("TOTP generated (not connected): {:06}", code);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("TOTP error: {:?}", e);
+                        }
                     }
                 }
 

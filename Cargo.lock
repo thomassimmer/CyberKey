@@ -903,6 +903,8 @@ dependencies = [
  "log",
  "mipidsi",
  "nb 1.1.0",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

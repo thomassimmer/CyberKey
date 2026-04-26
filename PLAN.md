@@ -1406,10 +1406,10 @@ This step covers the remaining work to reach a fully functional CyberKey v0.1.
 - [x] Clock: read BM8563 RTC on boot; fall back to a compile-time timestamp if RTC is unset
 
 **8.3 — CLI wire protocol in firmware** *(Phase 5 firmware side)*
-- [ ] Firmware listens on UART0 (USB serial) for JSON newline-delimited commands
-- [ ] Commands: `ping`, `list_entries`, `delete_entry`, `sync_clock`, `factory_reset`
-- [ ] `add_entry` deferred to 8.4 (depends on enrollment)
-- [ ] Run CLI listener in a FreeRTOS task so it doesn't block the main loop
+- [x] Firmware listens on UART0 (USB serial) for JSON newline-delimited commands
+- [x] Commands: `ping`, `list_entries`, `delete_entry`, `sync_clock`, `factory_reset`
+- [x] `add_entry` deferred to 8.4 (depends on enrollment)
+- [x] Run CLI listener in a FreeRTOS task so it doesn't block the main loop
 
 **8.4 — `add_entry` integration** *(Phase 2 + 5)*
 - [ ] `add_entry` command: firmware receives `{slot_id, totp_secret}` → launches `PS_AutoEnroll` → stores secret in NVS → replies `{ok: true}`
