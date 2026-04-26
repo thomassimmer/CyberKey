@@ -15,7 +15,10 @@
 //! Log output from EspLogger is interleaved on the same UART; the host tool
 //! should filter for lines that start with `{`.
 
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex,
+};
 
 use esp_idf_svc::{
     hal::{delay::BLOCK, uart::UartDriver},
@@ -49,6 +52,9 @@ pub enum EnrollResp {
     /// Enrollment failed (sensor error or begin_enroll rejected).
     Failed,
 }
+
+/// Set by [`cmd_factory_reset`] to signal the main loop to clear fingerprint templates and reboot.
+pub static FACTORY_RESET: AtomicBool = AtomicBool::new(false);
 
 /// Shared queue used to hand an [`EnrollRequest`] from the CLI task to the main loop.
 ///
@@ -456,7 +462,9 @@ fn cmd_factory_reset(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
             let _ = guard.0.remove(&format!("label_{slot}"));
         }
     }
-    log::warn!("CLI: factory reset — erased NVS, rebooting");
-    // Safety: esp_restart() does not return.
-    unsafe { esp_idf_svc::sys::esp_restart() }
+    log::warn!(
+        "CLI: factory reset — NVS erased, signalling main loop to clear fingerprints and reboot"
+    );
+    FACTORY_RESET.store(true, Ordering::Relaxed);
+    Resp::ok()
 }

@@ -163,6 +163,30 @@ impl<'d> FingerprintSensor<'d> {
         }
     }
 
+    /// Erase the entire template library on the sensor (`PS_Empty`).
+    ///
+    /// Returns `true` on success. Safe to call even if the sensor is in an unknown state.
+    pub fn empty_template_library(&mut self) -> bool {
+        if !self.ready {
+            return false;
+        }
+        self.driver.drain_rx();
+        if let Err(e) = self.driver.activate() {
+            log::warn!("empty_template_library: re-activate error: {:?}", e);
+        }
+        FreeRtos::delay_ms(100);
+        match self.driver.empty_template_library() {
+            Ok(()) => {
+                log::info!("Fingerprint: template library cleared");
+                true
+            }
+            Err(e) => {
+                log::warn!("Fingerprint: empty_template_library error: {:?}", e);
+                false
+            }
+        }
+    }
+
     /// Re-arm the sensor for autonomous finger detection.
     ///
     /// Call after enrollment or after any sequence that leaves the sensor in

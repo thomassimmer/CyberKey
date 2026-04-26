@@ -1417,8 +1417,8 @@ This step covers the remaining work to reach a fully functional CyberKey v0.1.
 - [x] `cyberkey-cli` `add_entry` menu option now drives the full flow end-to-end
 
 **8.5 — Factory reset** *(Phase 2 + 5)*
-- [ ] CLI `factory_reset` command: confirm `"RESET"` string → `PS_Empty` + erase NVS → reboot
-- [ ] Physical fallback: hold Button A 5 s at boot → same sequence (second press to confirm)
+- [x] CLI `factory_reset` command: confirm `"RESET"` string → `PS_Empty` + erase NVS → reboot
+- [x] Physical fallback: hold Button A 5 s at boot → same sequence (second press to confirm)
 
 **8.6 — Clock sync via CLI** *(Phase 3)*
 - [ ] `sync_clock` CLI command sends current Unix timestamp → firmware writes to BM8563 RTC via I2C

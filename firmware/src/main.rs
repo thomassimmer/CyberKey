@@ -246,6 +246,57 @@ fn main() -> anyhow::Result<()> {
         PinDriver::input(peripherals.pins.gpio35)?,
     );
 
+    // Physical factory reset: hold Button A for 5 s at power-on, then press A again to confirm.
+    {
+        const POLL_MS: u32 = 20;
+        const HOLD_TARGET: u32 = 5_000 / POLL_MS; // 250 polls = 5 s
+
+        let mut hold: u32 = 0;
+        while buttons.is_a_down() && hold < HOLD_TARGET {
+            hold += 1;
+            FreeRtos::delay_ms(POLL_MS);
+        }
+
+        if hold >= HOLD_TARGET {
+            display::show_status_2line(&mut disp, "Factory Reset?", "Press A again");
+
+            // Wait for release, then wait for a second press (10 s timeout).
+            while buttons.is_a_down() {
+                FreeRtos::delay_ms(POLL_MS);
+            }
+
+            let mut confirmed = false;
+            for _ in 0..(10_000 / POLL_MS) {
+                FreeRtos::delay_ms(POLL_MS);
+                if buttons.is_a_down() {
+                    confirmed = true;
+                    break;
+                }
+            }
+
+            if confirmed {
+                log::warn!("Factory reset: triggered via physical button (Button A hold at boot)");
+                display::show_status(&mut disp, "Resetting...");
+                log::info!("Factory reset: clearing fingerprint templates...");
+                fp.empty_template_library();
+                log::info!("Factory reset: fingerprint templates cleared");
+                log::info!("Factory reset: erasing NVS slots...");
+                {
+                    let mut guard = nvs.lock().unwrap();
+                    for slot in 0u32..10 {
+                        let _ = guard.0.remove(&format!("slot_{slot}"));
+                        let _ = guard.0.remove(&format!("label_{slot}"));
+                    }
+                }
+                log::info!("Factory reset: NVS erased");
+                log::warn!("Factory reset: complete — rebooting");
+                display::show_reset_ok(&mut disp);
+                FreeRtos::delay_ms(2000);
+                unsafe { esp_idf_svc::sys::esp_restart() }
+            }
+        }
+    }
+
     main_loop(
         &ble,
         &mut disp,
@@ -344,6 +395,19 @@ where
             display::show_status(disp, "Clearing...");
             FreeRtos::delay_ms(500);
             ble_hid::clear_bonds_and_reboot();
+        }
+
+        // CLI-driven factory reset: erase fingerprint templates then reboot.
+        if cli::FACTORY_RESET.load(Ordering::Relaxed) {
+            log::warn!("Factory reset: triggered via CLI");
+            display::show_status(disp, "Resetting...");
+            log::info!("Factory reset: clearing fingerprint templates...");
+            fp.empty_template_library();
+            log::info!("Factory reset: fingerprint templates cleared");
+            log::warn!("Factory reset: complete — rebooting");
+            display::show_reset_ok(disp);
+            FreeRtos::delay_ms(2000);
+            unsafe { esp_idf_svc::sys::esp_restart() }
         }
 
         // CLI-driven enrollment: pick up a pending EnrollRequest from the CLI task.

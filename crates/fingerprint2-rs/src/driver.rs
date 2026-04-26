@@ -455,6 +455,13 @@ where
         Ok(())
     }
 
+    /// Erase the entire template library on the sensor (`PS_Empty`).
+    pub fn empty_template_library(&mut self) -> Result<(), FingerprintError<E>> {
+        self.send_command(&[crate::commands::PS_EMPTY])?;
+        self.read_ack()?;
+        Ok(())
+    }
+
     /// Poll for an unsolicited incoming frame — **non-blocking**.
     ///
     /// - Returns `Ok(DriverEvent::Wakeup)` when the sensor's 12-byte autonomous

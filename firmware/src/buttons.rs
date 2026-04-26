@@ -49,6 +49,11 @@ impl<'d, A: InputPin, B: InputPin, C: InputPin> Buttons<'d, A, B, C> {
         }
     }
 
+    /// Returns `true` if Button A is currently pressed (active-low).
+    pub fn is_a_down(&self) -> bool {
+        self.btn_a.is_low()
+    }
+
     /// Call this every ~20 ms from the main loop.
     pub fn poll(&mut self) -> Option<ButtonEvent> {
         let a_down = self.btn_a.is_low();
