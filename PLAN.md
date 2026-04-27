@@ -169,9 +169,10 @@ draw in light sleep, theoretical standby autonomy is ~13 hours. Actual autonomy 
 be higher in practice (brief active bursts, not sustained 15 mA). This is acceptable
 for a device that is likely docked or carried and used several times a day.
 
-**v0.1 (development phase)**: always-on, no sleep. Power management is introduced
-once core features are stable. The always-on note in the CLI section applies only to
-this phase.
+**Implemented (post-v0.1):**
+- **Light sleep (tickless idle)** — `CONFIG_PM_ENABLE` + `CONFIG_FREERTOS_USE_TICKLESS_IDLE` + `esp_pm_configure(light_sleep_enable=true, min=80 MHz)`. UART1 (Grove/fingerprint) configured as wakeup source via `uart_set_wakeup_threshold`. CPU sleeps automatically between FreeRTOS ticks. ✅
+- **Screen timeout** — backlight (GPIO27) cut after 30 s of inactivity; restored on button press, fingerprint event, or CLI enrollment. ✅
+- **Adaptive tick rate** (deferred) — replace fixed `delay_ms(20)` with `delay_ms(100)` outside smart-poll windows; add `SESSION_ACTIVE` AtomicBool in CLI task to hold CPU frequency during active sessions. Marginal gain (~10%), kept for a later cleanup pass.
 
 **Deep sleep (deferred)**: deep sleep would reduce idle draw to ~0.15 mA but requires
 GPIO wakeup instead of UART wakeup. G32 and G33 (Grove port) are RTC-capable GPIOs on

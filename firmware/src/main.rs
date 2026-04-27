@@ -13,20 +13,21 @@ use esp_idf_svc::{
         adc::{
             attenuation,
             oneshot::{
-                config::{AdcChannelConfig, Calibration},
-                AdcChannelDriver, AdcDriver,
+                AdcChannelDriver, AdcDriver, config::{AdcChannelConfig, Calibration}
             },
         },
         delay::{Delay, FreeRtos},
         gpio::{AnyIOPin, InputPin, Output, OutputPin, PinDriver},
         i2c::{I2cConfig, I2cDriver},
         peripherals::Peripherals,
-        spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
-        uart::{config::Config as UartConfig, UartDriver},
+        spi::{SpiDeviceDriver, SpiDriver, SpiDriverConfig, config::Config as SpiConfig},
+        uart::{UartDriver, config::Config as UartConfig},
         units::Hertz,
     },
     nvs::{EspNvs, EspNvsPartition, NvsEncrypted},
-    sys::link_patches,
+    sys::{
+        esp_pm_config_esp32_t, esp_pm_configure, esp_sleep_enable_uart_wakeup, link_patches, uart_port_t_UART_NUM_1, uart_set_wakeup_threshold
+    },
 };
 use mipidsi::{
     interface::SpiInterface,
@@ -222,6 +223,15 @@ fn main() -> anyhow::Result<()> {
     let mut power_pin = PinDriver::output(peripherals.pins.gpio4)?;
     power_pin.set_high()?;
 
+    unsafe {
+        let pm_cfg = esp_pm_config_esp32_t {
+            max_freq_mhz: 160,
+            min_freq_mhz: 80,
+            light_sleep_enable: true,
+        };
+        esp_pm_configure(&pm_cfg as *const _ as *const core::ffi::c_void);
+    }
+
     // Battery — GPIO38 / ADC1 with a ÷2 voltage divider (M5Unified: _adc_ratio = 2.0).
     // Line-fitting calibration (esp_adc_cal) corrects ESP32 ADC non-linearity.
     // Formula mirrors M5Unified getBatteryLevel: map 3300–4150 mV → 0–100 %.
@@ -387,6 +397,11 @@ fn main() -> anyhow::Result<()> {
     FreeRtos::delay_ms(2000);
     display::show_pin(&mut disp, &sb, passkey);
 
+    unsafe {
+        uart_set_wakeup_threshold(uart_port_t_UART_NUM_1, 3);
+        esp_sleep_enable_uart_wakeup(uart_port_t_UART_NUM_1 as i32);
+    }
+
     // ------------------------------------------------------------------
     // Buttons — GPIO37 (A), GPIO39 (B), GPIO35 (C/power); active-low.
     // GPIO35/37/39 are input-only on ESP32 silicon (no internal pull resistors;
@@ -473,7 +488,7 @@ fn main_loop<D, A, B, C, P, BL, F>(
     mut buttons: buttons::Buttons<'_, A, B, C>,
     passkey: u32,
     mut power_pin: PinDriver<'_, P, Output>,
-    _backlight: PinDriver<'_, BL, Output>,
+    mut backlight: PinDriver<'_, BL, Output>,
     fp: &mut fingerprint::FingerprintSensor<'_>,
     nvs: Arc<Mutex<cli::SharedNvs>>,
     enroll_queue: cli::EnrollQueue,
@@ -497,6 +512,10 @@ where
     let mut last_battery_tick: u32 = 0;
     let mut last_minute: u8 = 255; // force topbar draw on first iteration
     let mut tick: u32 = 0;
+
+    const SCREEN_TIMEOUT_TICKS: u32 = 1_500; // 30 s at 20 ms/tick
+    let mut inactivity_ticks: u32 = 0;
+    let mut screen_on = true;
 
     loop {
         tick = tick.wrapping_add(1);
@@ -540,7 +559,15 @@ where
             }
         }
 
-        match buttons.poll() {
+        let btn_event = buttons.poll();
+        if btn_event.is_some() {
+            inactivity_ticks = 0;
+            if !screen_on {
+                backlight.set_high().ok();
+                screen_on = true;
+            }
+        }
+        match btn_event {
             Some(ButtonEvent::ALongPress) => {
                 if pending_bond_clear {
                     display::show_status(disp, &sb, "Clearing...");
@@ -606,6 +633,11 @@ where
         if let Ok(mut eq) = enroll_queue.try_lock() {
             if let Some(request) = eq.take() {
                 drop(eq); // release lock before the blocking enrollment loop
+                inactivity_ticks = 0;
+                if !screen_on {
+                    backlight.set_high().ok();
+                    screen_on = true;
+                }
                 const PASSES: u8 = 3;
                 display::show_status_2line(disp, &sb, "CLI Enroll", "Place finger");
                 if fp.begin_enroll(request.slot, PASSES) {
@@ -668,6 +700,11 @@ where
         // Fingerprint — non-blocking poll; blocks ~20 ms only when a finger is detected.
         match fp.poll() {
             Some(fingerprint::IdentifyResult::Match(id)) => {
+                inactivity_ticks = 0;
+                if !screen_on {
+                    backlight.set_high().ok();
+                    screen_on = true;
+                }
                 display::show_auth_ok(disp, &sb, id);
 
                 // Fetch secret from NVS
@@ -717,6 +754,11 @@ where
                 }
             }
             Some(fingerprint::IdentifyResult::NoMatch) => {
+                inactivity_ticks = 0;
+                if !screen_on {
+                    backlight.set_high().ok();
+                    screen_on = true;
+                }
                 display::show_no_match(disp, &sb);
                 FreeRtos::delay_ms(2000);
                 if connected {
@@ -726,6 +768,12 @@ where
                 }
             }
             None => {}
+        }
+
+        inactivity_ticks = inactivity_ticks.saturating_add(1);
+        if screen_on && inactivity_ticks >= SCREEN_TIMEOUT_TICKS {
+            backlight.set_low().ok();
+            screen_on = false;
         }
 
         FreeRtos::delay_ms(20);
