@@ -212,7 +212,10 @@ fn dispatch(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
         "delete_entry" => cmd_delete_entry_by_slot(cmd, nvs),
         "sync_clock" => cmd_sync_clock(cmd, nvs),
         "factory_reset" => cmd_factory_reset(cmd, nvs),
-        "allow_pairing" => Resp::ok(),
+        "allow_pairing" => {
+            crate::ble_hid::OPEN_PAIRING_REQUESTED.store(true, Ordering::Relaxed);
+            Resp::ok()
+        }
         other => Resp::err(format!("unknown cmd: {other}")),
     }
 }

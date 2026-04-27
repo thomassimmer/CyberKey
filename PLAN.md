@@ -1270,21 +1270,22 @@ both stacks, but Classic BT HID is not pursued.
 |---|---|
 | Transport security | **LESC + MITM** (`BLE_SM_IO_CAP_DISP_ONLY` + `BLE_SM_PAIR_AUTHREQ_MITM`) |
 | PIN display | 6-digit passkey shown on ST7789V2 screen during pairing |
-| Bonded hosts | **1 at a time** — single bond stored in NVS |
-| Switching computers | Hold **Button A 3 s** → screen confirms → press again → bond cleared, pairing mode |
-| Pairing window | Open at boot if no bond exists, or after Button A long press |
-| CLI unlock | `{"cmd":"allow_pairing"}` also clears bond and opens pairing window |
+| Bonded hosts | NimBLE NVS — multiple bonds possible, all cleared via Button A hold |
+| Switching computers | Hold **Button A 3 s** → screen confirms → press again → all bonds cleared, reboot |
+| Pairing window | Auto-open at boot if no bond exists (no timeout); otherwise closed by default |
+| Open pairing manually | Hold **Button B** (when disconnected) → fresh random PIN, 60 s window |
+| CLI unlock | `{"cmd":"allow_pairing"}` → fresh random PIN, 60 s window (does not clear bonds) |
 
 The screen enables full `DisplayOnly` MITM: the device generates a 6-digit passkey via
 ECDH, displays it on the LCD, and the host OS prompts the user to enter it. This prevents
 any rogue BLE host from silently pairing with the device.
 
 **Pairing UX flow**:
-1. Boot, no bond → advertise openly → LCD shows `"Pairing mode…"`
-2. Host requests pairing → LCD shows 6-digit PIN (e.g. `"PIN: 482 916"`)
-3. User enters PIN on computer → bond established → LCD shows `"Paired ✓"`
-4. Subsequent boots → advertise with whitelist (bonded peer only) → LCD shows `"Connected"` / `"Waiting…"`
-5. To switch computer → hold Button A 3 s → LCD shows `"Clear bond? Press A"` → confirm → back to step 1
+1. Boot, no bond → pairing window auto-open → LCD shows 6-digit PIN (e.g. `"482 916"`)
+2. Host requests pairing → user enters PIN → bond established → LCD shows `"Connected"`
+3. Subsequent boots → pairing window closed → LCD shows `"Hold B / to pair"` → Mac reconnects automatically via LTK
+4. To pair a new device → hold Button B → fresh PIN displayed for 60 s
+5. To switch computer → hold Button A 3 s → LCD shows `"Clear bond? Hold A again"` → confirm → all bonds cleared, reboot → back to step 1
 
 ---
 

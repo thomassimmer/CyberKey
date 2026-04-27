@@ -7,7 +7,7 @@
 //!   - `BleHid::type_string(text)`  (send keystrokes)
 //!   - `clear_bonds_and_reboot()`   (wipe NVS bonds, then esp_restart)
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use esp32_nimble::{
     enums::{AuthReq, OwnAddrType, PairKeyDist, SecurityIOCap},
@@ -48,6 +48,16 @@ pub static CONNECTED: AtomicBool = AtomicBool::new(false);
 /// UI sets this to request a bond-clear + reboot. Checked each iteration of
 /// the main loop and also honoured here after disconnect.
 pub static CLEAR_BONDS: AtomicBool = AtomicBool::new(false);
+
+/// Passkey shown on screen when the pairing window is open.
+static CURRENT_PASSKEY: AtomicU32 = AtomicU32::new(0);
+
+/// True only while the explicit pairing window is active.  When false the
+/// on_passkey_request callback returns random junk so new pairings fail.
+pub static PAIRING_ALLOWED: AtomicBool = AtomicBool::new(false);
+
+/// CLI sets this flag; the main loop picks it up and opens a fresh window.
+pub static OPEN_PAIRING_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // BleHid — opaque handle returned by init()
@@ -151,11 +161,11 @@ pub fn init(passkey: u32) -> BleHid {
     // a power cycle without user interaction.
     device.set_own_addr_type(OwnAddrType::RpaPublicDefault);
 
+    CURRENT_PASSKEY.store(passkey, Ordering::Relaxed);
     device
         .security()
         .set_auth(AuthReq::Bond | AuthReq::Mitm)
         .set_io_cap(SecurityIOCap::DisplayOnly)
-        .set_passkey(passkey)
         .set_security_init_key(PairKeyDist::ENC | PairKeyDist::ID)
         .set_security_resp_key(PairKeyDist::ENC | PairKeyDist::ID);
 
@@ -171,6 +181,15 @@ pub fn init(passkey: u32) -> BleHid {
         log::info!("[BLE] disconnected: {:?}", desc.address());
         SUBSCRIBED.store(false, Ordering::Relaxed);
         CONNECTED.store(false, Ordering::Relaxed);
+    });
+    // Return the real passkey only when the pairing window is explicitly open.
+    // Bonded peers reconnect via LTK and never trigger this callback.
+    server.on_passkey_request(|| {
+        if PAIRING_ALLOWED.load(Ordering::Relaxed) {
+            CURRENT_PASSKEY.load(Ordering::Relaxed)
+        } else {
+            (unsafe { esp_idf_svc::sys::esp_random() }) % 1_000_000
+        }
     });
 
     let mut hid = BLEHIDDevice::new(server);
@@ -220,4 +239,33 @@ pub fn clear_bonds_and_reboot() -> ! {
     let device = BLEDevice::take();
     let _ = device.delete_all_bonds();
     unsafe { esp_idf_svc::sys::esp_restart() }
+}
+
+// ---------------------------------------------------------------------------
+// Pairing window
+// ---------------------------------------------------------------------------
+
+/// True if at least one bond is stored in NVS.
+pub fn has_bonds() -> bool {
+    BLEDevice::take()
+        .bonded_addresses()
+        .map(|a| !a.is_empty())
+        .unwrap_or(false)
+}
+
+/// Open the pairing window: arm CURRENT_PASSKEY and set PAIRING_ALLOWED.
+///
+/// The on_passkey_request callback will now return `passkey` so a host that
+/// types the displayed PIN can complete pairing.
+pub fn open_pairing_window(passkey: u32) {
+    CURRENT_PASSKEY.store(passkey, Ordering::Relaxed);
+    PAIRING_ALLOWED.store(true, Ordering::Relaxed);
+    log::info!("[BLE] pairing window open — PIN {:06}", passkey);
+}
+
+/// Close the pairing window: clear PAIRING_ALLOWED so the callback starts
+/// returning random junk.  Bonded peers are unaffected (they use the LTK).
+pub fn close_pairing_window() {
+    PAIRING_ALLOWED.store(false, Ordering::Relaxed);
+    log::info!("[BLE] pairing window closed");
 }

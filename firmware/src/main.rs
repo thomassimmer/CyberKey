@@ -188,7 +188,7 @@ fn main() -> anyhow::Result<()> {
     backlight.set_high()?;
 
     let sb = display::StatusBar::unknown();
-    display::show_pin(&mut disp, &sb, passkey);
+    display::show_status(&mut disp, &sb, "CyberKey");
 
     // ------------------------------------------------------------------
     // BLE HID
@@ -215,7 +215,6 @@ fn main() -> anyhow::Result<()> {
         display::show_status_2line(&mut disp, &sb, "Fingerprint", "No sensor");
     }
     FreeRtos::delay_ms(2000);
-    display::show_pin(&mut disp, &sb, passkey);
 
     unsafe {
         uart_set_wakeup_threshold(uart_port_t_UART_NUM_1, 3);

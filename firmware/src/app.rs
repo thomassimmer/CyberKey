@@ -75,7 +75,7 @@ pub fn run<D, A, B, C, P, BL, F>(
     ble: &ble_hid::BleHid,
     disp: &mut D,
     mut buttons: crate::buttons::Buttons<'_, A, B, C>,
-    passkey: u32,
+    mut passkey: u32,
     mut power_pin: PinDriver<'_, P, Output>,
     mut backlight: PinDriver<'_, BL, Output>,
     fp: &mut fingerprint::FingerprintSensor<'_>,
@@ -108,6 +108,22 @@ where
 
     let sb_boot = display::StatusBar::unknown();
     check_boot_factory_reset(&buttons, disp, &sb_boot, fp, &nvs);
+
+    // Open the pairing window automatically on first boot (no bonds).
+    // With bonds, start closed and require an explicit button/CLI trigger.
+    // pairing_auto_close_at == 0 means no expiry (first-boot window stays
+    // open until the first connection closes it).
+    let has_bonds_at_boot = ble_hid::has_bonds();
+    let mut pairing_open = !has_bonds_at_boot;
+    let mut pairing_auto_close_at: u64 = 0;
+
+    if pairing_open {
+        ble_hid::open_pairing_window(passkey);
+        display::show_pin(disp, &sb_boot, passkey);
+    } else {
+        ble_hid::close_pairing_window();
+        display::show_status_2line(disp, &sb_boot, "Hold B", "to pair");
+    }
 
     loop {
         tick = tick.wrapping_add(1);
@@ -145,10 +161,45 @@ where
             last_connected = connected;
             pending_bond_clear = false;
             if connected {
+                if pairing_open {
+                    ble_hid::close_pairing_window();
+                    pairing_open = false;
+                    pairing_auto_close_at = 0;
+                }
                 display::show_status(disp, &sb, "Connected");
-            } else {
+            } else if pairing_open {
                 display::show_pin(disp, &sb, passkey);
+            } else {
+                display::show_status_2line(disp, &sb, "Hold B", "to pair");
             }
+        }
+
+        // Auto-close the pairing window after the configured timeout.
+        if pairing_open && pairing_auto_close_at > 0 {
+            let now_ts = unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64;
+            if now_ts >= pairing_auto_close_at {
+                ble_hid::close_pairing_window();
+                pairing_open = false;
+                pairing_auto_close_at = 0;
+                if !connected {
+                    display::show_status_2line(disp, &sb, "Hold B", "to pair");
+                }
+            }
+        }
+
+        // CLI allow_pairing: generate a fresh passkey and open a 60-second window.
+        if ble_hid::OPEN_PAIRING_REQUESTED.swap(false, Ordering::Relaxed) && !connected {
+            passkey = unsafe { esp_idf_svc::sys::esp_random() } % 1_000_000;
+            ble_hid::open_pairing_window(passkey);
+            pairing_open = true;
+            pairing_auto_close_at =
+                unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64 + 60;
+            inactivity_ticks = 0;
+            if !screen_on {
+                backlight.set_high().ok();
+                screen_on = true;
+            }
+            display::show_pin(disp, &sb, passkey);
         }
 
         let btn_event = buttons.poll();
@@ -175,14 +226,23 @@ where
                     pending_bond_clear = false;
                     if connected {
                         display::show_status(disp, &sb, "Connected");
-                    } else {
+                    } else if pairing_open {
                         display::show_pin(disp, &sb, passkey);
+                    } else {
+                        display::show_status_2line(disp, &sb, "Hold B", "to pair");
                     }
                 }
             }
             Some(ButtonEvent::BLongPress) => {
                 pending_bond_clear = false;
-                // Enrollment is now driven exclusively by the CLI (add_entry command).
+                if !connected && !pairing_open {
+                    passkey = unsafe { esp_idf_svc::sys::esp_random() } % 1_000_000;
+                    ble_hid::open_pairing_window(passkey);
+                    pairing_open = true;
+                    pairing_auto_close_at =
+                        unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64 + 60;
+                    display::show_pin(disp, &sb, passkey);
+                }
             }
             Some(ButtonEvent::BShortPress) => {
                 pending_bond_clear = false;
@@ -283,8 +343,10 @@ where
                 FreeRtos::delay_ms(2000);
                 if connected {
                     display::show_status(disp, &sb, "Connected");
-                } else {
+                } else if pairing_open {
                     display::show_pin(disp, &sb, passkey);
+                } else {
+                    display::show_status_2line(disp, &sb, "Hold B", "to pair");
                 }
             }
         }
@@ -340,8 +402,10 @@ where
                 FreeRtos::delay_ms(2000);
                 if connected {
                     display::show_status(disp, &sb, "Connected");
-                } else {
+                } else if pairing_open {
                     display::show_pin(disp, &sb, passkey);
+                } else {
+                    display::show_status_2line(disp, &sb, "Hold B", "to pair");
                 }
             }
             Some(fingerprint::IdentifyResult::NoMatch) => {
@@ -354,8 +418,10 @@ where
                 FreeRtos::delay_ms(2000);
                 if connected {
                     display::show_status(disp, &sb, "Connected");
-                } else {
+                } else if pairing_open {
                     display::show_pin(disp, &sb, passkey);
+                } else {
+                    display::show_status_2line(disp, &sb, "Hold B", "to pair");
                 }
             }
             None => {}
