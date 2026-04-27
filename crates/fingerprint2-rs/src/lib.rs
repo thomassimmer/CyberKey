@@ -7,7 +7,7 @@
 //! any UART implementation that satisfies the [`embedded_hal_nb::serial::Read`] and
 //! [`embedded_hal_nb::serial::Write`] traits, making it usable both in firmware
 //! (with the real `esp-idf-hal` UART peripheral) and in unit tests on the desktop
-//! (with a [`MockUart`] backed by in-memory buffers).
+//! (with a `MockUart` backed by in-memory buffers).
 //!
 //! # `no_std` design
 //!

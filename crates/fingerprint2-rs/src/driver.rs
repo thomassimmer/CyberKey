@@ -5,11 +5,12 @@
 //! The driver is generic over any UART implementation that satisfies
 //! [`embedded_hal_nb::serial::Read`] and [`embedded_hal_nb::serial::Write`].
 //! In production firmware the real `esp-idf-hal` UART peripheral is passed in.
-//! In unit tests a [`MockUart`](tests::MockUart) backed by in-memory buffers is
-//! used instead — no hardware required.
+//! In unit tests a `MockUart` backed by in-memory buffers is used instead —
+//! no hardware required.
 //!
 //! All public methods except [`Fingerprint2Driver::poll_event`] are **blocking**:
-//! they spin internally (up to [`MAX_RETRIES`] times) waiting for each byte.
+//! they spin internally (up to `READ_TIMEOUT_MS` = 500 times, 1 ms each) waiting
+//! for each byte.
 //! `poll_event` is the single non-blocking method and returns
 //! `Err(nb::Error::WouldBlock)` immediately when no data is available.
 
@@ -64,9 +65,9 @@ pub enum DriverEvent {
 /// [`embedded_hal_nb::serial::ErrorType`] from `embedded-hal-nb` v1.
 ///
 /// `DELAY` must implement [`embedded_hal::delay::DelayNs`]. On each
-/// `WouldBlock` in [`read_byte`](Self::read_byte) the driver calls
-/// `delay.delay_ms(1)`, which yields to the FreeRTOS scheduler instead of
-/// spinning and allows light sleep to engage between retries.
+/// `WouldBlock` in `read_byte` the driver calls `delay.delay_ms(1)`, which
+/// yields to the FreeRTOS scheduler instead of spinning and allows light sleep
+/// to engage between retries.
 pub struct Fingerprint2Driver<UART, DELAY> {
     /// The underlying UART peripheral (or mock in tests).
     uart: UART,
@@ -85,7 +86,7 @@ impl<UART, DELAY> Fingerprint2Driver<UART, DELAY> {
     ///
     /// `delay` is called with `delay_ms(1)` on every `WouldBlock` retry so
     /// that the FreeRTOS scheduler can run other tasks while waiting for a byte.
-    /// Pass [`esp_idf_svc::hal::delay::FreeRtos`] in production firmware and a
+    /// Pass `esp_idf_svc::hal::delay::FreeRtos` in production firmware and a
     /// no-op delay in unit tests.
     ///
     /// Uses the default broadcast address (`0xFFFF_FFFF`).
@@ -354,7 +355,7 @@ where
 
     /// Send `PS_AUTO_ENROLL` without reading any ACK.
     ///
-    /// Use [`read_enroll_pass`] once per capture pass to receive each per-pass
+    /// Use [`Self::read_enroll_pass`] once per capture pass to receive each per-pass
     /// ACK non-blockingly, so the caller can update a display between passes.
     pub fn begin_auto_enroll(
         &mut self,
