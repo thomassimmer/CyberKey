@@ -26,9 +26,9 @@ use crate::packet::{self, DEFAULT_ADDR, Frame, MAX_DATA_LEN, PacketType};
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Maximum number of `WouldBlock` retries before [`Fingerprint2Driver::read_byte`]
+/// Milliseconds to wait (yielding 1 ms per attempt) before [`Fingerprint2Driver::read_byte`]
 /// gives up and returns [`FingerprintError::Timeout`].
-const MAX_RETRIES: usize = 50_000_000;
+const READ_TIMEOUT_MS: u32 = 500;
 
 /// Maximum serialized frame size in bytes.
 /// = header(9) + MAX_DATA_LEN + checksum(2)
@@ -62,9 +62,16 @@ pub enum DriverEvent {
 /// `UART` must implement [`embedded_hal_nb::serial::Read<u8>`],
 /// [`embedded_hal_nb::serial::Write<u8>`], and
 /// [`embedded_hal_nb::serial::ErrorType`] from `embedded-hal-nb` v1.
-pub struct Fingerprint2Driver<UART> {
+///
+/// `DELAY` must implement [`embedded_hal::delay::DelayNs`]. On each
+/// `WouldBlock` in [`read_byte`](Self::read_byte) the driver calls
+/// `delay.delay_ms(1)`, which yields to the FreeRTOS scheduler instead of
+/// spinning and allows light sleep to engage between retries.
+pub struct Fingerprint2Driver<UART, DELAY> {
     /// The underlying UART peripheral (or mock in tests).
     uart: UART,
+    /// Delay provider — yields the CPU on each WouldBlock retry.
+    delay: DELAY,
     /// Device address sent in every outgoing frame. Normally `0xFFFF_FFFF`.
     address: u32,
 }
@@ -73,13 +80,19 @@ pub struct Fingerprint2Driver<UART> {
 // impl — no UART bounds needed just to construct the struct
 // ---------------------------------------------------------------------------
 
-impl<UART> Fingerprint2Driver<UART> {
+impl<UART, DELAY> Fingerprint2Driver<UART, DELAY> {
     /// Create a new driver wrapping `uart`.
     ///
+    /// `delay` is called with `delay_ms(1)` on every `WouldBlock` retry so
+    /// that the FreeRTOS scheduler can run other tasks while waiting for a byte.
+    /// Pass [`esp_idf_svc::hal::delay::FreeRtos`] in production firmware and a
+    /// no-op delay in unit tests.
+    ///
     /// Uses the default broadcast address (`0xFFFF_FFFF`).
-    pub fn new(uart: UART) -> Self {
+    pub fn new(uart: UART, delay: DELAY) -> Self {
         Self {
             uart,
+            delay,
             address: DEFAULT_ADDR,
         }
     }
@@ -89,33 +102,29 @@ impl<UART> Fingerprint2Driver<UART> {
 // impl — all methods that actually use the UART
 // ---------------------------------------------------------------------------
 
-impl<UART, E> Fingerprint2Driver<UART>
+impl<UART, E, DELAY> Fingerprint2Driver<UART, DELAY>
 where
     E: embedded_hal_nb::serial::Error,
     UART: embedded_hal_nb::serial::Read<u8>
         + embedded_hal_nb::serial::Write<u8>
         + embedded_hal_nb::serial::ErrorType<Error = E>,
+    DELAY: embedded_hal::delay::DelayNs,
 {
     // =======================================================================
     // Private UART byte-level helpers
     // =======================================================================
 
-    /// Read one byte, spinning on `WouldBlock` until data arrives or
-    /// [`MAX_RETRIES`] is exhausted.
+    /// Read one byte, yielding 1 ms to the scheduler on each `WouldBlock`
+    /// until data arrives or [`READ_TIMEOUT_MS`] milliseconds have elapsed.
     fn read_byte(&mut self) -> Result<u8, FingerprintError<E>> {
-        let mut retries = MAX_RETRIES;
-        loop {
+        for _ in 0..READ_TIMEOUT_MS {
             match embedded_hal_nb::serial::Read::read(&mut self.uart) {
                 Ok(b) => return Ok(b),
-                Err(nb::Error::WouldBlock) => {
-                    if retries == 0 {
-                        return Err(FingerprintError::Timeout);
-                    }
-                    retries -= 1;
-                }
+                Err(nb::Error::WouldBlock) => self.delay.delay_ms(1),
                 Err(nb::Error::Other(e)) => return Err(FingerprintError::Uart(e)),
             }
         }
+        Err(FingerprintError::Timeout)
     }
 
     /// Write one byte, spinning on `WouldBlock`.
@@ -545,6 +554,16 @@ mod tests {
     // `Vec<u8>` in test helpers refers to the standard heap-allocated Vec.
     use std::vec::Vec;
 
+    // =========================================================================
+    // NoopDelay — zero-cost delay for unit tests (no thread::sleep)
+    // =========================================================================
+
+    struct NoopDelay;
+
+    impl embedded_hal::delay::DelayNs for NoopDelay {
+        fn delay_ns(&mut self, _ns: u32) {}
+    }
+
     use super::*;
     use crate::commands::{AutoEnrollFlags, LedColor, LedMode};
     use crate::commands::{PS_AUTO_ENROLL, PS_CONTROL_BLN, PS_DELET_CHAR, PS_HANDSHAKE};
@@ -643,7 +662,7 @@ mod tests {
     /// Also verifies that the correct PS_HANDSHAKE opcode was transmitted.
     #[test]
     fn handshake_happy_path() {
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x00])));
+        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x00])), NoopDelay);
 
         assert_eq!(driver.handshake(), Ok(()));
         assert_eq!(extract_tx_data(&driver.uart.tx), vec![PS_HANDSHAKE]);
@@ -652,7 +671,7 @@ mod tests {
     /// Empty rx → retries exhausted → Timeout.
     #[test]
     fn handshake_no_response() {
-        let mut driver = Fingerprint2Driver::new(MockUart::new());
+        let mut driver = Fingerprint2Driver::new(MockUart::new(), NoopDelay);
         assert_eq!(driver.handshake(), Err(FingerprintError::Timeout));
     }
 
@@ -663,7 +682,7 @@ mod tests {
     /// confirm code 0x09 on any ACK → NoMatch (error propagated from read_ack).
     #[test]
     fn auto_identify_no_match() {
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x09])));
+        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x09])), NoopDelay);
         assert_eq!(driver.auto_identify(3), Err(FingerprintError::NoMatch));
     }
 
@@ -678,7 +697,7 @@ mod tests {
             .into_iter()
             .chain(ack_bytes(&[0x00, 0x05, 0x00, 0x05, 0x00, 0xFA]))
             .collect();
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(rx));
+        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(rx), NoopDelay);
 
         assert_eq!(driver.auto_identify(3), Ok((5, 250)));
     }
@@ -687,7 +706,7 @@ mod tests {
     #[test]
     fn auto_identify_success_no_intermediate() {
         let rx = ack_bytes(&[0x00, 0x05, 0x00, 0x05, 0x00, 0xFA]);
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(rx));
+        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(rx), NoopDelay);
         assert_eq!(driver.auto_identify(3), Ok((5, 250)));
     }
 
@@ -699,7 +718,7 @@ mod tests {
     /// are emitted into tx.
     #[test]
     fn set_led_encoding() {
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x00])));
+        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x00])), NoopDelay);
 
         driver
             .set_led(LedMode::Breathing, LedColor::Blue, 3)
@@ -722,7 +741,7 @@ mod tests {
     fn auto_enroll_happy_path() {
         // Need 1 command ACK + 3 capture ACKs = 4 ACKs total
         let rx: Vec<u8> = (0..4).flat_map(|_| ack_bytes(&[0x00])).collect();
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(rx));
+        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(rx), NoopDelay);
 
         assert_eq!(
             driver.auto_enroll(
@@ -744,7 +763,7 @@ mod tests {
     /// Confirm code 0x06 (image too noisy) on the first capture pass → EnrollFailed.
     #[test]
     fn auto_enroll_quality_failure() {
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x06])));
+        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x06])), NoopDelay);
         assert_eq!(
             driver.auto_enroll(
                 1,
@@ -764,7 +783,7 @@ mod tests {
     /// Verifies PS_DELET_CHAR opcode and big-endian page_id / count bytes.
     #[test]
     fn delete_template_encoding() {
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x00])));
+        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x00])), NoopDelay);
 
         driver.delete_template(5, 1).unwrap();
 
@@ -782,7 +801,7 @@ mod tests {
     /// ACK confirm=0x00 → Ok(()); verifies PS_ACTIVATE opcode is transmitted.
     #[test]
     fn activate_happy_path() {
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x00])));
+        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x00])), NoopDelay);
         assert_eq!(driver.activate(), Ok(()));
         assert_eq!(extract_tx_data(&driver.uart.tx), vec![PS_ACTIVATE]);
     }
@@ -790,7 +809,7 @@ mod tests {
     /// Empty rx → Timeout.
     #[test]
     fn activate_no_response() {
-        let mut driver = Fingerprint2Driver::new(MockUart::new());
+        let mut driver = Fingerprint2Driver::new(MockUart::new(), NoopDelay);
         assert_eq!(driver.activate(), Err(FingerprintError::Timeout));
     }
 
@@ -801,7 +820,7 @@ mod tests {
     /// Unmapped confirm code (0x15 = wrong password) → SensorError(0x15).
     #[test]
     fn unmapped_sensor_error_propagated() {
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x15])));
+        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x15])), NoopDelay);
         assert_eq!(driver.handshake(), Err(FingerprintError::SensorError(0x15)));
     }
 
@@ -815,14 +834,14 @@ mod tests {
         let wakeup = vec![
             0xEF_u8, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x07, 0x00, 0x03, 0xFF, 0x01, 0x09,
         ];
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(wakeup));
+        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(wakeup), NoopDelay);
         assert_eq!(driver.poll_event(), Ok(DriverEvent::Wakeup));
     }
 
     /// Empty rx → WouldBlock returned immediately (no retries, no timeout).
     #[test]
     fn poll_event_no_data() {
-        let mut driver = Fingerprint2Driver::new(MockUart::new());
+        let mut driver = Fingerprint2Driver::new(MockUart::new(), NoopDelay);
         assert_eq!(driver.poll_event(), Err(nb::Error::WouldBlock));
     }
 }

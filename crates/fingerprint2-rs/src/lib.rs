@@ -23,7 +23,7 @@
 //! ```ignore
 //! use fingerprint2_rs::{Fingerprint2Driver, commands::{AutoEnrollFlags, LedMode, LedColor}};
 //!
-//! let mut driver = Fingerprint2Driver::new(uart);
+//! let mut driver = Fingerprint2Driver::new(uart, delay);
 //! driver.handshake()?;
 //! driver.set_led(LedMode::Breathing, LedColor::Blue, 3)?;
 //! let page_id = driver.auto_identify(3)?;

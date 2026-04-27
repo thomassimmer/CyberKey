@@ -38,7 +38,7 @@ pub enum EnrollAck {
 }
 
 pub struct FingerprintSensor<'d> {
-    driver: Fingerprint2Driver<UartDriver<'d>>,
+    driver: Fingerprint2Driver<UartDriver<'d>, FreeRtos>,
     ready: bool,
     smart_poll_until: Option<std::time::Instant>,
 }
@@ -59,7 +59,7 @@ impl<'d> FingerprintSensor<'d> {
             &config,
         )?;
         Ok(Self {
-            driver: Fingerprint2Driver::new(uart_driver),
+            driver: Fingerprint2Driver::new(uart_driver, FreeRtos),
             ready: false,
             smart_poll_until: None,
         })
