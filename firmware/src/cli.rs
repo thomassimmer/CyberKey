@@ -5,7 +5,6 @@
 //!   {"cmd":"list_entries"}
 //!   {"cmd":"add_entry","label":"GitHub","secret_b32":"JBSWY3DPEHPK3PXP"}
 //!   {"cmd":"remove_entry","label":"GitHub"}
-//!   {"cmd":"generate_totp","slot":0}
 //!   {"cmd":"sync_clock","timestamp":1745000000}
 //!   {"cmd":"factory_reset","confirm":"RESET"}
 //!
@@ -67,7 +66,7 @@ struct Cmd {
     label: Option<String>,
     /// Used by: `add_entry`
     secret_b32: Option<String>,
-    /// Used by: `delete_entry` (legacy slot-based removal), `generate_totp`
+    /// Used by: `delete_entry` (legacy slot-based removal)
     slot: Option<u32>,
     /// Used by: `sync_clock` (legacy field name — keep for backward compat)
     ts: Option<u64>,
@@ -89,9 +88,6 @@ struct Resp {
     /// Returned by `add_entry` on success.
     #[serde(skip_serializing_if = "Option::is_none")]
     slot: Option<u8>,
-    /// Returned by `generate_totp` on success.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    code: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -112,40 +108,13 @@ struct EnrollEvent {
 
 impl Resp {
     fn ok() -> Self {
-        Resp {
-            ok: true,
-            error: None,
-            entries: None,
-            slot: None,
-            code: None,
-        }
+        Resp { ok: true, error: None, entries: None, slot: None }
     }
     fn ok_slot(slot: u8) -> Self {
-        Resp {
-            ok: true,
-            error: None,
-            entries: None,
-            slot: Some(slot),
-            code: None,
-        }
-    }
-    fn ok_code(code: u32) -> Self {
-        Resp {
-            ok: true,
-            error: None,
-            entries: None,
-            slot: None,
-            code: Some(code),
-        }
+        Resp { ok: true, error: None, entries: None, slot: Some(slot) }
     }
     fn err(msg: impl Into<String>) -> Self {
-        Resp {
-            ok: false,
-            error: Some(msg.into()),
-            entries: None,
-            slot: None,
-            code: None,
-        }
+        Resp { ok: false, error: Some(msg.into()), entries: None, slot: None }
     }
 }
 
@@ -241,7 +210,6 @@ fn dispatch(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
         "list_entries" => cmd_list_entries(nvs),
         "remove_entry" => cmd_remove_entry(cmd, nvs),
         "delete_entry" => cmd_delete_entry_by_slot(cmd, nvs),
-        "generate_totp" => cmd_generate_totp(cmd, nvs),
         "sync_clock" => cmd_sync_clock(cmd, nvs),
         "factory_reset" => cmd_factory_reset(cmd, nvs),
         "allow_pairing" => Resp::ok(),
@@ -360,13 +328,7 @@ fn cmd_list_entries(nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
             });
         }
     }
-    Resp {
-        ok: true,
-        error: None,
-        entries: Some(entries),
-        slot: None,
-        code: None,
-    }
+    Resp { ok: true, error: None, entries: Some(entries), slot: None }
 }
 
 /// `remove_entry` — removes an entry by its service label (case-sensitive).
@@ -398,25 +360,6 @@ fn cmd_delete_entry_by_slot(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     match guard.0.remove(&format!("slot_{slot}")) {
         Ok(true) => Resp::ok(),
         Ok(false) => Resp::err(format!("slot {slot} not found")),
-        Err(e) => Resp::err(format!("nvs error: {e}")),
-    }
-}
-
-fn cmd_generate_totp(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
-    let Some(slot) = cmd.slot else {
-        return Resp::err("missing field: slot");
-    };
-    let mut buf = [0u8; 65];
-    let guard = nvs.lock().unwrap();
-    match guard.0.get_str(&format!("slot_{slot}"), &mut buf) {
-        Ok(Some(secret)) => {
-            let now = unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64;
-            match cyberkey_core::generate_totp(secret, now) {
-                Ok(code) => Resp::ok_code(code),
-                Err(e) => Resp::err(format!("totp error: {e:?}")),
-            }
-        }
-        Ok(None) => Resp::err(format!("slot {slot} not found")),
         Err(e) => Resp::err(format!("nvs error: {e}")),
     }
 }

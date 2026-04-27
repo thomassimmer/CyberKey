@@ -1102,7 +1102,6 @@ Every command is a JSON object with a `"cmd"` field acting as discriminant.
 | List entries | `{"cmd":"list_entries"}` |
 | Add entry | `{"cmd":"add_entry","label":"GitHub","secret_b32":"JBSWY3DPEHPK3PXP"}` |
 | Remove entry | `{"cmd":"remove_entry","label":"GitHub"}` |
-| Generate TOTP | `{"cmd":"generate_totp","slot":0}` |
 | Sync clock | `{"cmd":"sync_clock","timestamp":1700000000}` |
 | Factory reset | `{"cmd":"factory_reset","confirm":"RESET"}` |
 | Allow BLE pairing | `{"cmd":"allow_pairing"}` |
@@ -1125,7 +1124,6 @@ Notes:
 {"ok":false,"error":"entry_not_found"}               ← error with reason string
 {"ok":true,"entries":[...]}                          ← list_entries
 {"ok":true,"slot":0}                                 ← add_entry (final, after enrollment)
-{"ok":true,"code":996554}                            ← generate_totp
 ```
 
 **Firmware greeting** (sent once automatically when the serial connection is opened):
@@ -1176,10 +1174,9 @@ incoming JSON in a single `serde_json::from_slice` call, then converts to the
 // 2. `version` field present (no `ok`) → Greeting
 // 3. `ok` + `entries`       → EntryList
 // 4. `ok` + `slot`          → AddEntryOk
-// 5. `ok` + `code`          → TotpCode
-// 6. `ok` + `error`         → Error
-// 7. `ok: true` alone       → Ok
-// 8. `ok: false` alone      → Err (firmware bug: missing error message)
+// 5. `ok` + `error`         → Error
+// 6. `ok: true` alone       → Ok
+// 7. `ok: false` alone      → Err (firmware bug: missing error message)
 ```
 
 ---

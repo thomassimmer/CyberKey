@@ -26,7 +26,6 @@ pub fn run(device: &mut Device) -> anyhow::Result<()> {
             "List configured fingers",
             "Add a new finger",
             "Remove a finger",
-            "Test TOTP generation",
             "Sync device clock",
             "Allow BLE pairing",
             "Factory reset",
@@ -45,11 +44,10 @@ pub fn run(device: &mut Device) -> anyhow::Result<()> {
             0 => action_list(device),
             1 => action_add(device),
             2 => action_remove(device),
-            3 => action_test_totp(device),
-            4 => action_sync_clock(device),
-            5 => action_allow_pairing(device),
-            6 => action_factory_reset(device),
-            7 => break,
+            3 => action_sync_clock(device),
+            4 => action_allow_pairing(device),
+            5 => action_factory_reset(device),
+            6 => break,
             _ => unreachable!("Select returned an out-of-range index"),
         };
 
@@ -223,60 +221,6 @@ fn action_remove(device: &mut Device) -> anyhow::Result<()> {
         }
         other => {
             anyhow::bail!("unexpected response from remove_entry: {other:?}");
-        }
-    }
-
-    Ok(())
-}
-
-// ── Action: Test TOTP generation ──────────────────────────────────────────────
-
-fn action_test_totp(device: &mut Device) -> anyhow::Result<()> {
-    let theme = ColorfulTheme::default();
-
-    // Fetch the current entry list so the user can pick which slot to test.
-    let entries = match device.call(&Command::ListEntries)? {
-        DeviceMessage::EntryList { entries } => entries,
-        DeviceMessage::Error { error } => {
-            println!("  ✗ {error}");
-            return Ok(());
-        }
-        other => anyhow::bail!("unexpected response from list_entries: {other:?}"),
-    };
-
-    if entries.is_empty() {
-        println!("  (no entries configured — add a finger first)");
-        return Ok(());
-    }
-
-    let labels: Vec<String> = entries
-        .iter()
-        .map(|e| format!("[{}] {}", e.slot, e.label))
-        .collect();
-
-    let idx = Select::with_theme(&theme)
-        .with_prompt("  Select entry to test")
-        .items(&labels)
-        .default(0)
-        .interact()?;
-
-    let slot = entries[idx].slot;
-
-    match device.call(&Command::GenerateTotp { slot })? {
-        DeviceMessage::TotpCode { code } => {
-            println!();
-            println!(
-                "  Current TOTP code for \"{}\":  {:06}",
-                entries[idx].label, code
-            );
-            println!();
-            println!("  (The code is valid for the remainder of the current 30-second window.)");
-        }
-        DeviceMessage::Error { error } => {
-            println!("  ✗ {error}");
-        }
-        other => {
-            anyhow::bail!("unexpected response from generate_totp: {other:?}");
         }
     }
 

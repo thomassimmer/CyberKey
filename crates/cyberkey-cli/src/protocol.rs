@@ -11,7 +11,6 @@
 //! {"cmd":"list_entries"}
 //! {"cmd":"add_entry","label":"GitHub","secret_b32":"JBSWY3DPEHPK3PXP"}
 //! {"cmd":"remove_entry","label":"GitHub"}
-//! {"cmd":"generate_totp","slot":0}
 //! {"cmd":"sync_clock","timestamp":1700000000}
 //! {"cmd":"factory_reset","confirm":"RESET"}
 //! {"cmd":"allow_pairing"}
@@ -24,7 +23,6 @@
 //! ```text
 //! {"ok":true,"entries":[{"slot":0,"label":"GitHub","secret_masked":"JBSW********************"}]}
 //! {"ok":true,"slot":0}
-//! {"ok":true,"code":123456}
 //! {"event":"enroll_step","step":1,"total":3,"state":"place_finger"}
 //! {"event":"enroll_step","step":1,"total":3,"state":"lift_finger"}
 //! {"ok":true}
@@ -61,10 +59,6 @@ pub enum Command {
 
     /// Remove an existing entry by its service label (case-sensitive).
     RemoveEntry { label: String },
-
-    /// Ask the firmware to compute a TOTP code for the given slot using the
-    /// device's current RTC time. Sync the clock first for accurate results.
-    GenerateTotp { slot: u8 },
 
     /// Synchronise the device RTC with the host Unix timestamp (seconds since
     /// the UNIX epoch) and the local UTC offset so the display shows local
@@ -130,8 +124,6 @@ struct RawMessage {
     entries: Option<Vec<EntryInfo>>,
     /// Populated by `add_entry` responses.
     slot: Option<u8>,
-    /// Populated by `generate_totp` responses.
-    code: Option<u32>,
     /// Populated by error responses.
     error: Option<String>,
 
@@ -156,9 +148,6 @@ pub enum DeviceMessage {
 
     /// Successful `add_entry` response — `slot` is the auto-assigned index.
     AddEntryOk { slot: u8 },
-
-    /// Successful `generate_totp` response — `code` is a 6-digit TOTP value.
-    TotpCode { code: u32 },
 
     /// Generic success for commands that return no additional payload
     /// (`remove_entry`, `sync_clock`, `factory_reset`, `allow_pairing`).
@@ -202,9 +191,6 @@ impl TryFrom<RawMessage> for DeviceMessage {
         }
         if let Some(slot) = raw.slot {
             return Ok(DeviceMessage::AddEntryOk { slot });
-        }
-        if let Some(code) = raw.code {
-            return Ok(DeviceMessage::TotpCode { code });
         }
         if let Some(error) = raw.error {
             return Ok(DeviceMessage::Error { error });
@@ -338,16 +324,6 @@ mod tests {
         assert_eq!(decoded, cmd);
     }
 
-    /// `generate_totp` encodes the slot number.
-    #[test]
-    fn encode_generate_totp_slot() {
-        let cmd = Command::GenerateTotp { slot: 3 };
-        let bytes = encode_command(&cmd).unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
-        assert_eq!(json["cmd"], "generate_totp");
-        assert_eq!(json["slot"], 3);
-    }
-
     // ── decode_response ───────────────────────────────────────────────────────
 
     /// `list_entries` response with one entry.
@@ -381,14 +357,6 @@ mod tests {
         let json = br#"{"ok":true,"slot":0}"#;
         let msg = decode_response(json).unwrap();
         assert_eq!(msg, DeviceMessage::AddEntryOk { slot: 0 });
-    }
-
-    /// `generate_totp` response carries the 6-digit code.
-    #[test]
-    fn decode_totp_code() {
-        let json = br#"{"ok":true,"code":996554}"#;
-        let msg = decode_response(json).unwrap();
-        assert_eq!(msg, DeviceMessage::TotpCode { code: 996554 });
     }
 
     /// Generic success response maps to `DeviceMessage::Ok`.
@@ -520,7 +488,6 @@ mod tests {
             Command::RemoveEntry {
                 label: "Svc".to_string(),
             },
-            Command::GenerateTotp { slot: 7 },
             Command::SyncClock {
                 timestamp: 1_700_000_000,
             },
