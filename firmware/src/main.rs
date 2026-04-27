@@ -51,6 +51,7 @@ pub(crate) static UTC_OFFSET_SECS: std::sync::atomic::AtomicI32 =
     std::sync::atomic::AtomicI32::new(0);
 
 use buttons::ButtonEvent;
+use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time};
 
 fn bcd2dec(bcd: u8) -> u8 {
     (bcd >> 4) * 10 + (bcd & 0x0F)
@@ -60,91 +61,29 @@ fn dec2bcd(dec: u8) -> u8 {
     ((dec / 10) << 4) | (dec % 10)
 }
 
-fn timestamp_to_datetime(ts: u64) -> (u16, u8, u8, u8, u8, u8) {
-    let second = (ts % 60) as u8;
-    let minute = ((ts / 60) % 60) as u8;
-    let hour = ((ts / 3600) % 24) as u8;
-    let mut days = (ts / 86400) as u32;
-
-    let mut year = 1970u16;
-    loop {
-        let y_days = if is_leap_year(year as u32) { 366 } else { 365 };
-        if days < y_days {
-            break;
-        }
-        days -= y_days;
-        year += 1;
-    }
-
-    let leap = is_leap_year(year as u32);
-    let month_lens: [u32; 12] = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut month = 1u8;
-    for &len in &month_lens {
-        if days < len {
-            break;
-        }
-        days -= len;
-        month += 1;
-    }
-
-    (year, month, (days + 1) as u8, hour, minute, second)
-}
-
 fn write_rtc(i2c: &mut I2cDriver, ts: u64) {
-    let (year, month, day, hour, minute, second) = timestamp_to_datetime(ts);
+    let Ok(dt) = OffsetDateTime::from_unix_timestamp(ts as i64) else {
+        log::warn!("write_rtc: invalid timestamp {}", ts);
+        return;
+    };
     let buf = [
-        0x02u8,                       // start at register 0x02
-        dec2bcd(second),              // 0x02: seconds — VL bit=0 clears the flag
-        dec2bcd(minute),              // 0x03: minutes
-        dec2bcd(hour),                // 0x04: hours
-        dec2bcd(day),                 // 0x05: days
-        0x00,                         // 0x06: weekday (not critical)
-        dec2bcd(month),               // 0x07: months (century bit=0 → 2000s)
-        dec2bcd((year - 2000) as u8), // 0x08: years (00-99 offset from 2000)
+        0x02u8,
+        dec2bcd(dt.second()),
+        dec2bcd(dt.minute()),
+        dec2bcd(dt.hour()),
+        dec2bcd(dt.day()),
+        0x00,
+        dec2bcd(dt.month() as u8),
+        dec2bcd((dt.year() as u16 - 2000) as u8),
     ];
     match i2c.write(0x51, &buf, esp_idf_svc::hal::delay::BLOCK) {
         Ok(()) => log::info!(
             "RTC written: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second
+            dt.year(), dt.month() as u8, dt.day(),
+            dt.hour(), dt.minute(), dt.second()
         ),
         Err(e) => log::warn!("RTC write failed: {:?}", e),
     }
-}
-
-const MONTH_DAYS: [u32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-fn is_leap_year(year: u32) -> bool {
-    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
-}
-fn rtc_to_timestamp(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> u64 {
-    let mut days = 0;
-    for y in 1970..year {
-        days += if is_leap_year(y.into()) { 366 } else { 365 };
-    }
-    days += MONTH_DAYS[month as usize - 1];
-    if month > 2 && is_leap_year(year.into()) {
-        days += 1;
-    }
-    days += (day - 1) as u32;
-
-    (days as u64 * 86400) + (hour as u64 * 3600) + (minute as u64 * 60) + second as u64
 }
 
 fn init_rtc(i2c: &mut I2cDriver) -> anyhow::Result<()> {
@@ -168,22 +107,28 @@ fn init_rtc(i2c: &mut I2cDriver) -> anyhow::Result<()> {
     let hour = bcd2dec(buf[2] & 0x3F);
     let day = bcd2dec(buf[3] & 0x3F);
     let month = bcd2dec(buf[5] & 0x1F);
-    let year_offset = bcd2dec(buf[6]);
-    let year = 2000 + year_offset as u16;
+    let year = 2000i32 + bcd2dec(buf[6]) as i32;
 
-    let ts = rtc_to_timestamp(year, month, day, hour, min, sec);
-    log::info!(
-        "RTC: {:04}-{:02}-{:02} {:02}:{:02}:{:02} -> ts={}",
-        year,
-        month,
-        day,
-        hour,
-        min,
-        sec,
-        ts
-    );
-    set_system_time(ts);
-    Ok(())
+    let ts = Month::try_from(month)
+        .ok()
+        .and_then(|m| Date::from_calendar_date(year, m, day).ok())
+        .and_then(|d| Time::from_hms(hour, min, sec).ok().map(|t| (d, t)))
+        .map(|(d, t)| PrimitiveDateTime::new(d, t).assume_utc().unix_timestamp() as u64);
+
+    match ts {
+        Some(ts) => {
+            log::info!(
+                "RTC: {:04}-{:02}-{:02} {:02}:{:02}:{:02} -> ts={}",
+                year, month, day, hour, min, sec, ts
+            );
+            set_system_time(ts);
+            Ok(())
+        }
+        None => {
+            log::warn!("RTC: invalid date/time in registers, using fallback");
+            fallback_time()
+        }
+    }
 }
 
 fn fallback_time() -> anyhow::Result<()> {
@@ -203,14 +148,13 @@ fn set_system_time(ts: u64) {
     }
 }
 
-/// Return the current wall-clock time as `"HH:MM"` in local time.
 fn format_time() -> String {
     let utc = unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as i64;
-    let local = utc + UTC_OFFSET_SECS.load(Ordering::Relaxed) as i64;
-    let local = local.max(0) as u64;
-    let minute = ((local / 60) % 60) as u8;
-    let hour = ((local / 3600) % 24) as u8;
-    format!("{:02}:{:02}", hour, minute)
+    let local_ts = utc + UTC_OFFSET_SECS.load(Ordering::Relaxed) as i64;
+    match OffsetDateTime::from_unix_timestamp(local_ts.max(0)) {
+        Ok(dt) => format!("{:02}:{:02}", dt.hour(), dt.minute()),
+        Err(_) => "??:??".to_string(),
+    }
 }
 
 fn main() -> anyhow::Result<()> {
