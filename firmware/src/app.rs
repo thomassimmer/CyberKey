@@ -8,7 +8,7 @@ use esp_idf_svc::hal::{
     i2c::I2cDriver,
 };
 
-use crate::{ble_hid, buttons::ButtonEvent, cli, config_store, display, fingerprint, rtc};
+use crate::{ble_hid, buttons::{ButtonEvent, POLL_MS}, cli, config_store, display, fingerprint, rtc};
 
 /// Boot-time check: if Button A is held for 5 s, prompt for a second press to confirm,
 /// then erase all fingerprint templates and NVS slots before rebooting.
@@ -101,7 +101,7 @@ where
     let mut last_minute: u8 = 255; // force topbar draw on first iteration
     let mut tick: u32 = 0;
 
-    const SCREEN_TIMEOUT_TICKS: u32 = 1_500; // 30 s at 20 ms/tick
+    const SCREEN_TIMEOUT_TICKS: u32 = 1_500; // 30 s at POLL_MS/tick
     let mut inactivity_ticks: u32 = 0;
     let mut screen_on = true;
 
@@ -272,7 +272,7 @@ where
                             }
                             fingerprint::EnrollAck::Pending => {}
                         }
-                        FreeRtos::delay_ms(20);
+                        FreeRtos::delay_ms(POLL_MS);
                     }
                 } else {
                     let _ = request.reply.send(cli::EnrollResp::Failed);
@@ -366,6 +366,6 @@ where
             screen_on = false;
         }
 
-        FreeRtos::delay_ms(20);
+        FreeRtos::delay_ms(POLL_MS);
     }
 }

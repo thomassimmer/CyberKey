@@ -1,11 +1,14 @@
 //! Polling-based button handler for the M5StickC Plus 2.
 //!
 //! GPIO37 (A), GPIO39 (B), and GPIO35 (C/power) are active-low with external
-//! pull-ups on the board.  Call `poll()` every ~20 ms from the main loop.
+//! pull-ups on the board.  Call `poll()` every [`POLL_MS`] ms from the main loop.
 
 use esp_idf_svc::hal::gpio::{Input, InputPin, PinDriver};
 
-/// Long-press threshold: 150 polls × 20 ms = 3 seconds.
+/// Main-loop poll interval in milliseconds.
+pub const POLL_MS: u32 = 20;
+
+/// Long-press threshold: 150 polls × POLL_MS = 3 seconds.
 const LONG_PRESS_POLLS: u32 = 150;
 
 #[allow(clippy::enum_variant_names)]
@@ -54,7 +57,7 @@ impl<'d, A: InputPin, B: InputPin, C: InputPin> Buttons<'d, A, B, C> {
         self.btn_a.is_low()
     }
 
-    /// Call this every ~20 ms from the main loop.
+    /// Call this every [`POLL_MS`] ms from the main loop.
     pub fn poll(&mut self) -> Option<ButtonEvent> {
         let a_down = self.btn_a.is_low();
         let b_down = self.btn_b.is_low();
