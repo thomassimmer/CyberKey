@@ -319,10 +319,15 @@ fn cmd_add_entry(
     nvs: &Arc<Mutex<SharedNvs>>,
     enroll_tx: &EnrollSender,
 ) {
-    let label = match cmd.label.as_deref().filter(|s| !s.is_empty()) {
+    let label_raw = match cmd.label.as_deref().filter(|s| !s.is_empty()) {
         Some(l) => l,
         None => return write_resp(uart, &Resp::err("missing field: label")),
     };
+    let mut label_end = label_raw.len().min(256);
+    while !label_raw.is_char_boundary(label_end) {
+        label_end -= 1;
+    }
+    let label = &label_raw[..label_end];
     let secret = match cmd.secret_b32.as_deref().filter(|s| !s.is_empty()) {
         Some(s) => s,
         None => return write_resp(uart, &Resp::err("missing field: secret_b32")),
@@ -400,7 +405,7 @@ fn cmd_list_entries(nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     let guard = nvs.lock().expect("NVS mutex poisoned");
     let mut entries = Vec::new();
     let mut secret_buf = [0u8; 65];
-    let mut label_buf = [0u8; 33];
+    let mut label_buf = [0u8; 257];
     for slot in 0u32..10 {
         if let Ok(Some(secret)) = guard.0.get_str(&format!("slot_{slot}"), &mut secret_buf) {
             let label = match guard.0.get_str(&format!("label_{slot}"), &mut label_buf) {
@@ -424,7 +429,7 @@ fn cmd_remove_entry(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
         return Resp::err("missing field: label");
     };
     let mut guard = nvs.lock().expect("NVS mutex poisoned");
-    let mut label_buf = [0u8; 33];
+    let mut label_buf = [0u8; 257];
     for slot in 0u32..10 {
         if let Ok(Some(stored)) = guard.0.get_str(&format!("label_{slot}"), &mut label_buf) {
             if stored == label {
