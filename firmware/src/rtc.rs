@@ -4,6 +4,7 @@ use esp_idf_svc::hal::{delay::BLOCK, i2c::I2cDriver};
 use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time};
 
 use crate::board;
+use cyberkey_core::bcd::{bcd2dec, dec2bcd};
 
 /// Set by `cmd_sync_clock` in the CLI task; drained by the main loop which
 /// has exclusive access to the I2C bus and can write it to the BM8563.
@@ -13,14 +14,6 @@ pub(crate) static PENDING_RTC_WRITE: std::sync::Mutex<Option<u64>> = std::sync::
 /// in `format_time()` so the display shows local time rather than UTC.
 pub(crate) static UTC_OFFSET_SECS: std::sync::atomic::AtomicI32 =
     std::sync::atomic::AtomicI32::new(0);
-
-fn bcd2dec(bcd: u8) -> u8 {
-    (bcd >> 4) * 10 + (bcd & 0x0F)
-}
-
-fn dec2bcd(dec: u8) -> u8 {
-    ((dec / 10) << 4) | (dec % 10)
-}
 
 pub fn write(i2c: &mut I2cDriver, ts: u64) {
     let Ok(dt) = OffsetDateTime::from_unix_timestamp(ts as i64) else {

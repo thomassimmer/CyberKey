@@ -10,6 +10,7 @@
 //! [`heapless`].
 #![cfg_attr(not(test), no_std)]
 
+pub mod bcd;
 pub mod config;
 pub mod error;
 pub mod totp;
