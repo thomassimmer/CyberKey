@@ -20,16 +20,10 @@ use std::sync::{
     mpsc, Arc, Mutex,
 };
 
-use esp_idf_svc::{
-    hal::{delay::BLOCK, uart::UartDriver},
-    nvs::{EspNvs, NvsEncrypted},
-};
+use esp_idf_svc::hal::{delay::BLOCK, uart::UartDriver};
 use serde::{Deserialize, Serialize};
 
-/// Newtype that lets `EspNvs` cross thread boundaries under a `Mutex`.
-pub struct SharedNvs(pub EspNvs<NvsEncrypted>);
-// Safety: access is serialised by the surrounding Mutex.
-unsafe impl Send for SharedNvs {}
+pub use crate::config_store::SharedNvs;
 
 // ── Enrollment IPC (CLI task ↔ main loop) ────────────────────────────────────
 
@@ -442,11 +436,11 @@ fn cmd_sync_clock(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     }
     // Signal the main loop to write this timestamp to the BM8563 hardware
     // so the correct time survives a reboot.
-    if let Ok(mut guard) = crate::PENDING_RTC_WRITE.lock() {
+    if let Ok(mut guard) = crate::rtc::PENDING_RTC_WRITE.lock() {
         *guard = Some(ts);
     }
     let offset = cmd.tz_offset_secs.unwrap_or(0);
-    crate::UTC_OFFSET_SECS.store(offset, std::sync::atomic::Ordering::Relaxed);
+    crate::rtc::UTC_OFFSET_SECS.store(offset, std::sync::atomic::Ordering::Relaxed);
     // Persist the offset so it is restored at the next boot without a host sync.
     if let Ok(guard) = nvs.lock() {
         let _ = guard.0.set_i32("tz_offset", offset);
