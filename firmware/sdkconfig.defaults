@@ -17,3 +17,7 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 CONFIG_PM_DFS_INIT_AUTO=y
+# Allow NimBLE to maintain the BLE link during light sleep using the 32 kHz
+# sleep clock.  Without this, any active BLE connection blocks light sleep
+# entirely, making CONFIG_PM_ENABLE effectively a no-op while connected.
+CONFIG_BT_NIMBLE_RUN_BLE_ON_SUSPEND=y
