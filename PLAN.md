@@ -192,16 +192,20 @@ side, the `serialport` crate handles cross-platform port access
 
 #### Session model
 
-There is no explicit "config mode" to activate. The firmware runs a lightweight background
-task that listens on UART0 at all times. A CLI session begins when the CLI opens the port
-and sends a `ping` command; it ends when the CLI sends `bye` or after a 30-second
-inactivity timeout.
+The firmware runs a lightweight background task that listens on UART0 at all times.
+`ping` and `sync_clock` are always allowed; all other commands require a fingerprint
+unlock first.
 
-**Mutual exclusion — fingerprint vs. CLI**: the two operating modes are treated as
-mutually exclusive. While a CLI session is active, fingerprint scanning is suspended. When
-the session ends, scanning resumes. This avoids any concurrency or locking complexity at
-the cost of a negligible UX limitation (the device cannot authenticate while being
-configured — which matches the natural usage pattern anyway).
+**Fingerprint gate**: the user sends `{"cmd":"unlock"}`. The main loop shows
+"CLI Auth / Place finger" on the display and polls the fingerprint sensor for up to 30 s.
+Any registered fingerprint grants a **5-minute session** (timeout refreshed on each
+command). On no-match or timeout the command returns an error. Bootstrap exception: the
+gate is inactive when no TOTP entries are enrolled yet, so the very first `add_entry` can
+proceed without prior auth.
+
+**Mutual exclusion — fingerprint vs. CLI verify**: while the main loop is waiting for a
+fingerprint during `unlock`, it does not process normal TOTP fingerprint scans. The two
+paths are serialised through the same `fp.poll()` call in the main loop.
 
 **Battery behaviour**: when powered from USB, the external supply covers all consumption
 and UART0 listening is free. When on battery, the firmware does not initiate CLI sessions
@@ -219,10 +223,18 @@ Request/response examples:
 
 ```
 → {"cmd":"ping"}
-← {"ok":true,"version":"0.1.0"}
+← {"ok":true}
 
 → {"cmd":"list_entries"}
-← {"ok":true,"entries":[{"slot":0,"label":"GitHub"},{"slot":1,"label":"AWS"}]}
+← {"ok":false,"error":"cli_locked: send {\"cmd\":\"unlock\"} then place finger"}
+
+→ {"cmd":"unlock"}
+  [display: "CLI Auth / Place finger" — user places enrolled finger]
+← {"ok":true}
+
+→ {"cmd":"list_entries"}
+← {"ok":true,"entries":[{"slot":0,"label":"GitHub","secret_masked":"****************"},
+                         {"slot":1,"label":"AWS","secret_masked":"****************"}]}
 
 → {"cmd":"add_entry","label":"VPN corp","secret_b32":"JBSWY3DPEHPK3PXP"}
 ← {"ok":true,"slot":2}
@@ -230,10 +242,7 @@ Request/response examples:
 → {"cmd":"remove_entry","label":"VPN corp"}
 ← {"ok":true}
 
-→ {"cmd":"sync_clock","unix_ts":1718000000}
-← {"ok":true}
-
-→ {"cmd":"bye"}
+→ {"cmd":"sync_clock","timestamp":1718000000}
 ← {"ok":true}
 ```
 

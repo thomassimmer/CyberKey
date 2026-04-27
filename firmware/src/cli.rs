@@ -55,6 +55,15 @@ pub static FACTORY_RESET: AtomicBool = AtomicBool::new(false);
 /// process it, then set back to `None`.
 pub type EnrollQueue = Arc<Mutex<Option<EnrollRequest>>>;
 
+/// Sent from the CLI task to the main loop to verify a fingerprint for CLI unlock.
+pub struct VerifyRequest {
+    /// Main loop sends `true` on any registered fingerprint match, `false` on no-match or timeout.
+    pub reply: mpsc::SyncSender<bool>,
+}
+
+/// Shared queue for CLI fingerprint verification requests.
+pub type VerifyQueue = Arc<Mutex<Option<VerifyRequest>>>;
+
 // ── Wire types ────────────────────────────────────────────────────────────────
 
 /// All fields that any command might carry.  Fields not relevant to a given
@@ -125,25 +134,48 @@ pub fn spawn(
     uart: UartDriver<'static>,
     nvs: Arc<Mutex<SharedNvs>>,
     enroll_queue: EnrollQueue,
+    verify_queue: VerifyQueue,
 ) -> anyhow::Result<()> {
     std::thread::Builder::new()
         .stack_size(8192)
-        .spawn(move || run(uart, nvs, enroll_queue))?;
+        .spawn(move || run(uart, nvs, enroll_queue, verify_queue))?;
     Ok(())
 }
 
-fn run(uart: UartDriver<'static>, nvs: Arc<Mutex<SharedNvs>>, enroll_queue: EnrollQueue) {
+fn run(
+    uart: UartDriver<'static>,
+    nvs: Arc<Mutex<SharedNvs>>,
+    enroll_queue: EnrollQueue,
+    verify_queue: VerifyQueue,
+) {
     let mut buf: Vec<u8> = Vec::with_capacity(256);
     let mut byte = [0u8; 1];
+    let mut unlocked = false;
+    let mut unlock_until: Option<std::time::Instant> = None;
 
     loop {
+        if let Some(until) = unlock_until {
+            if std::time::Instant::now() > until {
+                unlocked = false;
+                unlock_until = None;
+            }
+        }
+
         if uart.read(&mut byte, BLOCK).is_err() {
             continue;
         }
         match byte[0] {
             b'\n' => {
                 if !buf.is_empty() {
-                    handle_command(&uart, &buf, &nvs, &enroll_queue);
+                    handle_command(
+                        &uart,
+                        &buf,
+                        &nvs,
+                        &enroll_queue,
+                        &verify_queue,
+                        &mut unlocked,
+                        &mut unlock_until,
+                    );
                     buf.clear();
                 }
             }
@@ -175,6 +207,14 @@ fn write_event(uart: &UartDriver<'static>, event: &EnrollEvent) {
 
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 
+/// Returns true if at least one TOTP entry exists in NVS (used to decide whether
+/// the CLI fingerprint gate is active — a fresh device with no entries is open).
+fn has_any_entries(nvs: &Arc<Mutex<SharedNvs>>) -> bool {
+    let guard = nvs.lock().unwrap();
+    let mut buf = [0u8; 65];
+    (0u32..10).any(|s| matches!(guard.0.get_str(&format!("slot_{s}"), &mut buf), Ok(Some(_))))
+}
+
 /// Top-level command router.  `add_entry` is handled specially because it
 /// needs to stream multiple JSON lines before the terminal response; all other
 /// commands produce a single `Resp` via `dispatch`.
@@ -183,6 +223,9 @@ fn handle_command(
     raw: &[u8],
     nvs: &Arc<Mutex<SharedNvs>>,
     enroll_queue: &EnrollQueue,
+    verify_queue: &VerifyQueue,
+    unlocked: &mut bool,
+    unlock_until: &mut Option<std::time::Instant>,
 ) {
     let s = match core::str::from_utf8(raw) {
         Ok(s) => s.trim(),
@@ -196,11 +239,59 @@ fn handle_command(
         Err(e) => return write_resp(uart, &Resp::err(format!("parse error: {e}"))),
     };
 
+    match cmd.cmd.as_str() {
+        // These commands are always allowed without authentication.
+        "ping" | "sync_clock" => {}
+        "unlock" => {
+            cmd_unlock(uart, verify_queue, unlocked, unlock_until);
+            return;
+        }
+        _ => {
+            // Gate: active only when at least one entry is enrolled (bootstrap is open).
+            if has_any_entries(nvs) && !*unlocked {
+                return write_resp(
+                    uart,
+                    &Resp::err(r#"cli_locked: send {"cmd":"unlock"} then place finger"#),
+                );
+            }
+            // Refresh the 5-minute session window on each authenticated command.
+            if *unlocked {
+                *unlock_until = Some(
+                    std::time::Instant::now() + std::time::Duration::from_secs(300),
+                );
+            }
+        }
+    }
+
     if cmd.cmd == "add_entry" {
         cmd_add_entry(uart, &cmd, nvs, enroll_queue);
     } else {
         let resp = dispatch(&cmd, nvs);
         write_resp(uart, &resp);
+    }
+}
+
+/// `unlock` — requests a fingerprint scan from the main loop and unlocks the CLI
+/// session on success.  Blocks until the main loop responds (up to 30 s).
+fn cmd_unlock(
+    uart: &UartDriver<'static>,
+    verify_queue: &VerifyQueue,
+    unlocked: &mut bool,
+    unlock_until: &mut Option<std::time::Instant>,
+) {
+    let (tx, rx) = mpsc::sync_channel(1);
+    *verify_queue.lock().unwrap() = Some(VerifyRequest { reply: tx });
+    // Block until the main loop sends back a verdict (or channel closes on panic).
+    match rx.recv() {
+        Ok(true) => {
+            *unlocked = true;
+            *unlock_until =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(300));
+            write_resp(uart, &Resp::ok());
+        }
+        Ok(false) | Err(_) => {
+            write_resp(uart, &Resp::err("fingerprint_no_match"));
+        }
     }
 }
 
@@ -322,8 +413,7 @@ fn cmd_list_entries(nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
                 Ok(Some(l)) => l.to_string(),
                 _ => format!("slot {slot}"),
             };
-            let visible: String = secret.chars().take(4).collect();
-            let secret_masked = format!("{}{}", visible, "*".repeat(20));
+            let secret_masked = "*".repeat(secret.len());
             entries.push(SlotEntry {
                 slot: slot as u8,
                 label,

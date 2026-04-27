@@ -81,6 +81,7 @@ pub fn run<D, A, B, C, P, BL, F>(
     fp: &mut fingerprint::FingerprintSensor<'_>,
     nvs: Arc<Mutex<config_store::SharedNvs>>,
     enroll_queue: cli::EnrollQueue,
+    verify_queue: cli::VerifyQueue,
     i2c: &mut I2cDriver<'_>,
     read_battery: &mut F,
 ) -> anyhow::Result<()>
@@ -341,6 +342,45 @@ where
                 }
                 fp.reactivate();
                 FreeRtos::delay_ms(2000);
+                if connected {
+                    display::show_status(disp, &sb, "Connected");
+                } else if pairing_open {
+                    display::show_pin(disp, &sb, passkey);
+                } else {
+                    display::show_status_2line(disp, &sb, "Hold B", "to pair");
+                }
+            }
+        }
+
+        // CLI-driven fingerprint verify: pick up a pending VerifyRequest from the CLI task.
+        if let Ok(mut vq) = verify_queue.try_lock() {
+            if let Some(request) = vq.take() {
+                drop(vq);
+                inactivity_ticks = 0;
+                if !screen_on {
+                    backlight.set_high().ok();
+                    screen_on = true;
+                }
+                display::show_status_2line(disp, &sb, "CLI Auth", "Place finger");
+                let deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(30);
+                let matched = loop {
+                    if std::time::Instant::now() > deadline {
+                        break false;
+                    }
+                    match fp.poll() {
+                        Some(fingerprint::IdentifyResult::Match(_)) => break true,
+                        Some(fingerprint::IdentifyResult::NoMatch) => break false,
+                        None => FreeRtos::delay_ms(POLL_MS),
+                    }
+                };
+                let _ = request.reply.send(matched);
+                if matched {
+                    display::show_status(disp, &sb, "CLI Unlocked");
+                } else {
+                    display::show_status(disp, &sb, "Auth Failed");
+                }
+                FreeRtos::delay_ms(1500);
                 if connected {
                     display::show_status(disp, &sb, "Connected");
                 } else if pairing_open {

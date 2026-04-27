@@ -106,6 +106,8 @@ fn main() -> anyhow::Result<()> {
 
     // Enrollment IPC queue — CLI task posts a request here; main loop picks it up.
     let enroll_queue: cli::EnrollQueue = Arc::new(Mutex::new(None));
+    // Fingerprint-verify IPC queue — CLI task posts an unlock request; main loop verifies.
+    let verify_queue: cli::VerifyQueue = Arc::new(Mutex::new(None));
 
     // UART0 (USB-serial, GPIO1=TX / GPIO3=RX) — CLI wire protocol listener.
     // Safety: transmute to 'static is valid because the peripheral registers
@@ -120,7 +122,7 @@ fn main() -> anyhow::Result<()> {
         &uart_cfg,
     )?;
     let uart0: esp_idf_svc::hal::uart::UartDriver<'static> = unsafe { core::mem::transmute(uart0) };
-    cli::spawn(uart0, nvs.clone(), enroll_queue.clone())?;
+    cli::spawn(uart0, nvs.clone(), enroll_queue.clone(), verify_queue.clone())?;
 
     // RTC init (I2C0 on GPIO21/22)
     let config = I2cConfig::new().baudrate(Hertz(board::I2C_FREQ_HZ));
@@ -242,6 +244,7 @@ fn main() -> anyhow::Result<()> {
         &mut fp,
         nvs,
         enroll_queue,
+        verify_queue,
         &mut i2c_driver,
         &mut read_battery,
     )?;
