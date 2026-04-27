@@ -102,6 +102,7 @@ where
     let mut tick: u32 = 0;
 
     const SCREEN_TIMEOUT_TICKS: u32 = 1_500; // 30 s at POLL_MS/tick
+    const IDLE_POLL_MS: u32 = 100; // sleep interval when screen is off
     let mut inactivity_ticks: u32 = 0;
     let mut screen_on = true;
 
@@ -151,7 +152,7 @@ where
         }
 
         let btn_event = buttons.poll();
-        if btn_event.is_some() {
+        if btn_event.is_some() || (!screen_on && buttons.is_any_down()) {
             inactivity_ticks = 0;
             if !screen_on {
                 backlight.set_high().ok();
@@ -366,6 +367,6 @@ where
             screen_on = false;
         }
 
-        FreeRtos::delay_ms(POLL_MS);
+        FreeRtos::delay_ms(if screen_on { POLL_MS } else { IDLE_POLL_MS });
     }
 }
