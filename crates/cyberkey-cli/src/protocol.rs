@@ -307,7 +307,10 @@ mod tests {
     /// `sync_clock` timestamp round-trip at boundary value 0.
     #[test]
     fn encode_sync_clock_timestamp_zero() {
-        let cmd = Command::SyncClock { timestamp: 0 };
+        let cmd = Command::SyncClock {
+            timestamp: 0,
+            tz_offset_secs: 0,
+        };
         let bytes = encode_command(&cmd).unwrap();
         let decoded: Command = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
         assert_eq!(decoded, cmd);
@@ -318,6 +321,7 @@ mod tests {
     fn encode_sync_clock_timestamp_max() {
         let cmd = Command::SyncClock {
             timestamp: u64::MAX,
+            tz_offset_secs: i32::MIN,
         };
         let bytes = encode_command(&cmd).unwrap();
         let decoded: Command = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
@@ -474,6 +478,65 @@ mod tests {
         }
     }
 
+    // ── enroll_step missing fields ────────────────────────────────────────────
+
+    #[test]
+    fn decode_enroll_step_missing_step_returns_error() {
+        let json = br#"{"event":"enroll_step","total":3,"state":"place_finger"}"#;
+        assert!(decode_response(json).is_err());
+    }
+
+    #[test]
+    fn decode_enroll_step_missing_total_returns_error() {
+        let json = br#"{"event":"enroll_step","step":1,"state":"place_finger"}"#;
+        assert!(decode_response(json).is_err());
+    }
+
+    #[test]
+    fn decode_enroll_step_missing_state_returns_error() {
+        let json = br#"{"event":"enroll_step","step":1,"total":3}"#;
+        assert!(decode_response(json).is_err());
+    }
+
+    /// An unrecognised `state` string must be rejected at the serde layer.
+    #[test]
+    fn decode_enroll_step_invalid_state_returns_error() {
+        let json = br#"{"event":"enroll_step","step":1,"total":3,"state":"wiggle_finger"}"#;
+        assert!(decode_response(json).is_err());
+    }
+
+    // ── wrong field types ─────────────────────────────────────────────────────
+
+    /// `slot` typed as string instead of u8 must be rejected.
+    #[test]
+    fn decode_add_entry_slot_wrong_type_returns_error() {
+        let json = br#"{"ok":true,"slot":"zero"}"#;
+        assert!(decode_response(json).is_err());
+    }
+
+    /// `step` typed as string instead of u8 must be rejected.
+    #[test]
+    fn decode_enroll_step_step_wrong_type_returns_error() {
+        let json = br#"{"event":"enroll_step","step":"one","total":3,"state":"place_finger"}"#;
+        assert!(decode_response(json).is_err());
+    }
+
+    /// An entry with a missing `label` field must be rejected.
+    #[test]
+    fn decode_entry_list_missing_label_returns_error() {
+        let json = br#"{"ok":true,"entries":[{"slot":0,"secret_masked":"JBSW**"}]}"#;
+        assert!(decode_response(json).is_err());
+    }
+
+    // ── structurally ambiguous messages ───────────────────────────────────────
+
+    /// A message with no `ok`, no `event`, and no `version` must return an error.
+    #[test]
+    fn decode_message_missing_ok_returns_error() {
+        let json = br#"{"some_unknown_field":"value"}"#;
+        assert!(decode_response(json).is_err());
+    }
+
     // ── Command round-trips ───────────────────────────────────────────────────
 
     /// Every command variant should survive an encode → JSON decode round-trip.
@@ -490,6 +553,7 @@ mod tests {
             },
             Command::SyncClock {
                 timestamp: 1_700_000_000,
+                tz_offset_secs: 3600,
             },
             Command::FactoryReset {
                 confirm: "RESET".to_string(),

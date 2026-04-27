@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-"""Interactive CLI tester for the CyberKey firmware wire protocol.
+"""Manual debug tool — interactive REPL for the CyberKey firmware wire protocol.
+
+NOT part of CI. Use this to probe firmware commands by hand over serial.
 
 Usage:
-    python3 test.py [PORT]
+    python3 tools/cli_test.py [PORT]
 
 PORT defaults to the first /dev/cu.usbserial-* device found.
-Special substitution: $now is replaced by the current Unix timestamp, e.g.:
-    {"cmd":"sync_clock","ts":$now}
+$now in a command is replaced by the current Unix timestamp.
+
+Example session:
+    > {"cmd":"get_totp_code"}
+    > {"cmd":"sync_clock","ts":$now}
+
+Dependencies:
+    pip install pyserial
 """
 import glob, serial, sys, time
 
