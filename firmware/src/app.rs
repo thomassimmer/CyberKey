@@ -57,7 +57,7 @@ fn check_boot_factory_reset<D, A, B, C>(
         fp.empty_template_library();
         log::info!("Factory reset: fingerprint templates cleared");
         {
-            let mut guard = nvs.lock().unwrap();
+            let mut guard = nvs.lock().expect("NVS mutex poisoned");
             for slot in 0u32..10 {
                 let _ = guard.0.remove(&format!("slot_{slot}"));
                 let _ = guard.0.remove(&format!("label_{slot}"));
@@ -80,8 +80,8 @@ pub fn run<D, A, B, C, P, BL, F>(
     mut backlight: PinDriver<'_, BL, Output>,
     fp: &mut fingerprint::FingerprintSensor<'_>,
     nvs: Arc<Mutex<config_store::SharedNvs>>,
-    enroll_queue: cli::EnrollQueue,
-    verify_queue: cli::VerifyQueue,
+    enroll_rx: std::sync::mpsc::Receiver<cli::EnrollRequest>,
+    verify_rx: std::sync::mpsc::Receiver<cli::VerifyRequest>,
     i2c: &mut I2cDriver<'_>,
     read_battery: &mut F,
 ) -> anyhow::Result<()>
@@ -283,111 +283,105 @@ where
         }
 
         // CLI-driven enrollment: pick up a pending EnrollRequest from the CLI task.
-        if let Ok(mut eq) = enroll_queue.try_lock() {
-            if let Some(request) = eq.take() {
-                drop(eq); // release lock before the blocking enrollment loop
-                inactivity_ticks = 0;
-                if !screen_on {
-                    backlight.set_high().ok();
-                    screen_on = true;
-                }
-                const PASSES: u8 = 3;
-                display::show_status_2line(disp, &sb, "CLI Enroll", "Place finger");
-                if fp.begin_enroll(request.slot, PASSES) {
-                    let _ = request.reply.send(cli::EnrollResp::PlaceFinger {
-                        step: 1,
-                        total: PASSES,
-                    });
-                    let mut pass = 0u8;
-                    loop {
-                        match fp.poll_enroll_ack() {
-                            fingerprint::EnrollAck::CaptureOk => {
-                                pass += 1;
-                                let _ = request.reply.send(cli::EnrollResp::LiftFinger {
-                                    step: pass,
+        if let Ok(request) = enroll_rx.try_recv() {
+            inactivity_ticks = 0;
+            if !screen_on {
+                backlight.set_high().ok();
+                screen_on = true;
+            }
+            const PASSES: u8 = 3;
+            display::show_status_2line(disp, &sb, "CLI Enroll", "Place finger");
+            if fp.begin_enroll(request.slot, PASSES) {
+                let _ = request.reply.send(cli::EnrollResp::PlaceFinger {
+                    step: 1,
+                    total: PASSES,
+                });
+                let mut pass = 0u8;
+                loop {
+                    match fp.poll_enroll_ack() {
+                        fingerprint::EnrollAck::CaptureOk => {
+                            pass += 1;
+                            let _ = request.reply.send(cli::EnrollResp::LiftFinger {
+                                step: pass,
+                                total: PASSES,
+                            });
+                            if pass < PASSES {
+                                let _ = request.reply.send(cli::EnrollResp::PlaceFinger {
+                                    step: pass + 1,
                                     total: PASSES,
                                 });
-                                if pass < PASSES {
-                                    let _ = request.reply.send(cli::EnrollResp::PlaceFinger {
-                                        step: pass + 1,
-                                        total: PASSES,
-                                    });
-                                    display::show_status_2line(
-                                        disp,
-                                        &sb,
-                                        "Lift + replace",
-                                        &format!("pass {}/{}", pass + 1, PASSES),
-                                    );
-                                } else {
-                                    display::show_status(disp, &sb, "Processing...");
-                                }
+                                display::show_status_2line(
+                                    disp,
+                                    &sb,
+                                    "Lift + replace",
+                                    &format!("pass {}/{}", pass + 1, PASSES),
+                                );
+                            } else {
+                                display::show_status(disp, &sb, "Processing...");
                             }
-                            fingerprint::EnrollAck::Done => {
-                                let _ = request.reply.send(cli::EnrollResp::Done);
-                                display::show_enroll_ok(disp, &sb, request.slot);
-                                break;
-                            }
-                            fingerprint::EnrollAck::Failed => {
-                                let _ = request.reply.send(cli::EnrollResp::Failed);
-                                display::show_status_2line(disp, &sb, "Enroll", "Failed");
-                                break;
-                            }
-                            fingerprint::EnrollAck::Pending => {}
                         }
-                        FreeRtos::delay_ms(POLL_MS);
+                        fingerprint::EnrollAck::Done => {
+                            let _ = request.reply.send(cli::EnrollResp::Done);
+                            display::show_enroll_ok(disp, &sb, request.slot);
+                            break;
+                        }
+                        fingerprint::EnrollAck::Failed => {
+                            let _ = request.reply.send(cli::EnrollResp::Failed);
+                            display::show_status_2line(disp, &sb, "Enroll", "Failed");
+                            break;
+                        }
+                        fingerprint::EnrollAck::Pending => {}
                     }
-                } else {
-                    let _ = request.reply.send(cli::EnrollResp::Failed);
-                    display::show_status_2line(disp, &sb, "Enroll", "Failed");
+                    FreeRtos::delay_ms(POLL_MS);
                 }
-                fp.reactivate();
-                FreeRtos::delay_ms(2000);
-                if connected {
-                    display::show_status(disp, &sb, "Connected");
-                } else if pairing_open {
-                    display::show_pin(disp, &sb, passkey);
-                } else {
-                    display::show_status_2line(disp, &sb, "Hold B", "to pair");
-                }
+            } else {
+                let _ = request.reply.send(cli::EnrollResp::Failed);
+                display::show_status_2line(disp, &sb, "Enroll", "Failed");
+            }
+            fp.reactivate();
+            FreeRtos::delay_ms(2000);
+            if connected {
+                display::show_status(disp, &sb, "Connected");
+            } else if pairing_open {
+                display::show_pin(disp, &sb, passkey);
+            } else {
+                display::show_status_2line(disp, &sb, "Hold B", "to pair");
             }
         }
 
         // CLI-driven fingerprint verify: pick up a pending VerifyRequest from the CLI task.
-        if let Ok(mut vq) = verify_queue.try_lock() {
-            if let Some(request) = vq.take() {
-                drop(vq);
-                inactivity_ticks = 0;
-                if !screen_on {
-                    backlight.set_high().ok();
-                    screen_on = true;
+        if let Ok(request) = verify_rx.try_recv() {
+            inactivity_ticks = 0;
+            if !screen_on {
+                backlight.set_high().ok();
+                screen_on = true;
+            }
+            display::show_status_2line(disp, &sb, "CLI Auth", "Place finger");
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let matched = loop {
+                if std::time::Instant::now() > deadline {
+                    break false;
                 }
-                display::show_status_2line(disp, &sb, "CLI Auth", "Place finger");
-                let deadline =
-                    std::time::Instant::now() + std::time::Duration::from_secs(30);
-                let matched = loop {
-                    if std::time::Instant::now() > deadline {
-                        break false;
-                    }
-                    match fp.poll() {
-                        Some(fingerprint::IdentifyResult::Match(_)) => break true,
-                        Some(fingerprint::IdentifyResult::NoMatch) => break false,
-                        None => FreeRtos::delay_ms(POLL_MS),
-                    }
-                };
-                let _ = request.reply.send(matched);
-                if matched {
-                    display::show_status(disp, &sb, "CLI Unlocked");
-                } else {
-                    display::show_status(disp, &sb, "Auth Failed");
+                match fp.poll() {
+                    Some(fingerprint::IdentifyResult::Match(_)) => break true,
+                    Some(fingerprint::IdentifyResult::NoMatch) => break false,
+                    None => FreeRtos::delay_ms(POLL_MS),
                 }
-                FreeRtos::delay_ms(1500);
-                if connected {
-                    display::show_status(disp, &sb, "Connected");
-                } else if pairing_open {
-                    display::show_pin(disp, &sb, passkey);
-                } else {
-                    display::show_status_2line(disp, &sb, "Hold B", "to pair");
-                }
+            };
+            let _ = request.reply.send(matched);
+            if matched {
+                display::show_status(disp, &sb, "CLI Unlocked");
+            } else {
+                display::show_status(disp, &sb, "Auth Failed");
+            }
+            FreeRtos::delay_ms(1500);
+            if connected {
+                display::show_status(disp, &sb, "Connected");
+            } else if pairing_open {
+                display::show_pin(disp, &sb, passkey);
+            } else {
+                display::show_status_2line(disp, &sb, "Hold B", "to pair");
             }
         }
 
@@ -404,7 +398,7 @@ where
                 let key = format!("slot_{}", id);
                 let mut buf = [0u8; 65];
                 let totp_result = {
-                    let guard = nvs.lock().unwrap();
+                    let guard = nvs.lock().expect("NVS mutex poisoned");
                     match guard.0.get_str(&key, &mut buf) {
                         Ok(Some(secret)) => {
                             let now =

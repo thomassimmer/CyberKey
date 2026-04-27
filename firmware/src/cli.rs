@@ -49,11 +49,8 @@ pub enum EnrollResp {
 /// Set by [`cmd_factory_reset`] to signal the main loop to clear fingerprint templates and reboot.
 pub static FACTORY_RESET: AtomicBool = AtomicBool::new(false);
 
-/// Shared queue used to hand an [`EnrollRequest`] from the CLI task to the main loop.
-///
-/// `None` = no pending request; `Some(_)` = main loop should pick this up and
-/// process it, then set back to `None`.
-pub type EnrollQueue = Arc<Mutex<Option<EnrollRequest>>>;
+/// Sender half of the enrollment channel (CLI task → main loop).
+pub type EnrollSender = mpsc::SyncSender<EnrollRequest>;
 
 /// Sent from the CLI task to the main loop to verify a fingerprint for CLI unlock.
 pub struct VerifyRequest {
@@ -61,8 +58,8 @@ pub struct VerifyRequest {
     pub reply: mpsc::SyncSender<bool>,
 }
 
-/// Shared queue for CLI fingerprint verification requests.
-pub type VerifyQueue = Arc<Mutex<Option<VerifyRequest>>>;
+/// Sender half of the verify channel (CLI task → main loop).
+pub type VerifySender = mpsc::SyncSender<VerifyRequest>;
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -133,20 +130,20 @@ impl Resp {
 pub fn spawn(
     uart: UartDriver<'static>,
     nvs: Arc<Mutex<SharedNvs>>,
-    enroll_queue: EnrollQueue,
-    verify_queue: VerifyQueue,
+    enroll_tx: EnrollSender,
+    verify_tx: VerifySender,
 ) -> anyhow::Result<()> {
     std::thread::Builder::new()
         .stack_size(8192)
-        .spawn(move || run(uart, nvs, enroll_queue, verify_queue))?;
+        .spawn(move || run(uart, nvs, enroll_tx, verify_tx))?;
     Ok(())
 }
 
 fn run(
     uart: UartDriver<'static>,
     nvs: Arc<Mutex<SharedNvs>>,
-    enroll_queue: EnrollQueue,
-    verify_queue: VerifyQueue,
+    enroll_tx: EnrollSender,
+    verify_tx: VerifySender,
 ) {
     let mut buf: Vec<u8> = Vec::with_capacity(256);
     let mut byte = [0u8; 1];
@@ -171,8 +168,8 @@ fn run(
                         &uart,
                         &buf,
                         &nvs,
-                        &enroll_queue,
-                        &verify_queue,
+                        &enroll_tx,
+                        &verify_tx,
                         &mut unlocked,
                         &mut unlock_until,
                     );
@@ -210,7 +207,7 @@ fn write_event(uart: &UartDriver<'static>, event: &EnrollEvent) {
 /// Returns true if at least one TOTP entry exists in NVS (used to decide whether
 /// the CLI fingerprint gate is active — a fresh device with no entries is open).
 fn has_any_entries(nvs: &Arc<Mutex<SharedNvs>>) -> bool {
-    let guard = nvs.lock().unwrap();
+    let guard = nvs.lock().expect("NVS mutex poisoned");
     let mut buf = [0u8; 65];
     (0u32..10).any(|s| matches!(guard.0.get_str(&format!("slot_{s}"), &mut buf), Ok(Some(_))))
 }
@@ -222,8 +219,8 @@ fn handle_command(
     uart: &UartDriver<'static>,
     raw: &[u8],
     nvs: &Arc<Mutex<SharedNvs>>,
-    enroll_queue: &EnrollQueue,
-    verify_queue: &VerifyQueue,
+    enroll_tx: &EnrollSender,
+    verify_tx: &VerifySender,
     unlocked: &mut bool,
     unlock_until: &mut Option<std::time::Instant>,
 ) {
@@ -243,7 +240,7 @@ fn handle_command(
         // These commands are always allowed without authentication.
         "ping" | "sync_clock" => {}
         "unlock" => {
-            cmd_unlock(uart, verify_queue, unlocked, unlock_until);
+            cmd_unlock(uart, verify_tx, unlocked, unlock_until);
             return;
         }
         _ => {
@@ -264,7 +261,7 @@ fn handle_command(
     }
 
     if cmd.cmd == "add_entry" {
-        cmd_add_entry(uart, &cmd, nvs, enroll_queue);
+        cmd_add_entry(uart, &cmd, nvs, enroll_tx);
     } else {
         let resp = dispatch(&cmd, nvs);
         write_resp(uart, &resp);
@@ -275,12 +272,12 @@ fn handle_command(
 /// session on success.  Blocks until the main loop responds (up to 30 s).
 fn cmd_unlock(
     uart: &UartDriver<'static>,
-    verify_queue: &VerifyQueue,
+    verify_tx: &VerifySender,
     unlocked: &mut bool,
     unlock_until: &mut Option<std::time::Instant>,
 ) {
     let (tx, rx) = mpsc::sync_channel(1);
-    *verify_queue.lock().unwrap() = Some(VerifyRequest { reply: tx });
+    let _ = verify_tx.send(VerifyRequest { reply: tx });
     // Block until the main loop sends back a verdict (or channel closes on panic).
     match rx.recv() {
         Ok(true) => {
@@ -320,7 +317,7 @@ fn cmd_add_entry(
     uart: &UartDriver<'static>,
     cmd: &Cmd,
     nvs: &Arc<Mutex<SharedNvs>>,
-    enroll_queue: &EnrollQueue,
+    enroll_tx: &EnrollSender,
 ) {
     let label = match cmd.label.as_deref().filter(|s| !s.is_empty()) {
         Some(l) => l,
@@ -333,7 +330,7 @@ fn cmd_add_entry(
 
     // Find the first free slot (0–9) and write secret + label to NVS.
     let slot: u32 = {
-        let mut guard = nvs.lock().unwrap();
+        let mut guard = nvs.lock().expect("NVS mutex poisoned");
         let mut probe = [0u8; 65];
         let free = (0u32..10).find(|&s| {
             !matches!(
@@ -356,10 +353,7 @@ fn cmd_add_entry(
 
     // Hand the enrollment request to the main loop.
     let (tx, rx) = mpsc::sync_channel(16);
-    *enroll_queue.lock().unwrap() = Some(EnrollRequest {
-        slot: slot as u16,
-        reply: tx,
-    });
+    let _ = enroll_tx.send(EnrollRequest { slot: slot as u16, reply: tx });
 
     // Stream enrollment progress events over serial until done or failed.
     loop {
@@ -392,7 +386,7 @@ fn cmd_add_entry(
             }
             Ok(EnrollResp::Failed) | Err(_) => {
                 // Undo NVS writes so the slot is available for a retry.
-                let mut guard = nvs.lock().unwrap();
+                let mut guard = nvs.lock().expect("NVS mutex poisoned");
                 let _ = guard.0.remove(&format!("slot_{slot}"));
                 let _ = guard.0.remove(&format!("label_{slot}"));
                 write_resp(uart, &Resp::err("enrollment failed"));
@@ -403,7 +397,7 @@ fn cmd_add_entry(
 }
 
 fn cmd_list_entries(nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
-    let guard = nvs.lock().unwrap();
+    let guard = nvs.lock().expect("NVS mutex poisoned");
     let mut entries = Vec::new();
     let mut secret_buf = [0u8; 65];
     let mut label_buf = [0u8; 33];
@@ -429,7 +423,7 @@ fn cmd_remove_entry(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     let Some(label) = cmd.label.as_deref().filter(|s| !s.is_empty()) else {
         return Resp::err("missing field: label");
     };
-    let mut guard = nvs.lock().unwrap();
+    let mut guard = nvs.lock().expect("NVS mutex poisoned");
     let mut label_buf = [0u8; 33];
     for slot in 0u32..10 {
         if let Ok(Some(stored)) = guard.0.get_str(&format!("label_{slot}"), &mut label_buf) {
@@ -448,7 +442,7 @@ fn cmd_delete_entry_by_slot(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     let Some(slot) = cmd.slot else {
         return Resp::err("missing field: slot");
     };
-    let mut guard = nvs.lock().unwrap();
+    let mut guard = nvs.lock().expect("NVS mutex poisoned");
     let _ = guard.0.remove(&format!("label_{slot}"));
     match guard.0.remove(&format!("slot_{slot}")) {
         Ok(true) => Resp::ok(),
@@ -490,7 +484,7 @@ fn cmd_factory_reset(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
         return Resp::err("send confirm=\"RESET\" to confirm");
     }
     {
-        let mut guard = nvs.lock().unwrap();
+        let mut guard = nvs.lock().expect("NVS mutex poisoned");
         for slot in 0u32..10 {
             let _ = guard.0.remove(&format!("slot_{slot}"));
             let _ = guard.0.remove(&format!("label_{slot}"));

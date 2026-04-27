@@ -154,7 +154,7 @@ pub fn init(passkey: u32) -> BleHid {
         Err(e) => log::warn!("[BLE] failed to read bonds: {:?}", e),
     }
 
-    BLEDevice::set_device_name("CyberKey").unwrap();
+    BLEDevice::set_device_name("CyberKey").expect("BLE: failed to set device name");
 
     // RPA: the advertised address rotates periodically; macOS resolves it via the
     // IRK distributed during bonding.  This enables automatic reconnection after
@@ -219,8 +219,8 @@ pub fn init(passkey: u32) -> BleHid {
                 .appearance(0x03C1) // Bluetooth SIG: Keyboard
                 .add_service_uuid(BleUuid::Uuid16(0x1812)),
         )
-        .unwrap();
-    device.get_advertising().lock().start().unwrap();
+        .expect("BLE: failed to set advertising data");
+    device.get_advertising().lock().start().expect("BLE: failed to start advertising");
 
     log::info!("[BLE] advertising — PIN for first pairing: {:06}", passkey);
 
