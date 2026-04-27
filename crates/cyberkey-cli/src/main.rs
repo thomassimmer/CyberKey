@@ -28,7 +28,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use dialoguer::{Select, theme::ColorfulTheme};
 
-use crate::protocol::Command;
+use crate::protocol::{Command, DeviceMessage};
 
 // ── CLI arguments ─────────────────────────────────────────────────────────────
 
@@ -96,6 +96,17 @@ fn main() -> Result<()> {
     }) {
         Ok(_) => println!("  Clock synced with host (t = {now}, UTC offset {tz_offset_secs:+}s)."),
         Err(e) => eprintln!("  Warning: clock sync failed — {e}"),
+    }
+
+    println!();
+
+    // ── Authenticate the CLI session ──────────────────────────────────────────
+
+    println!("  Place your finger on the sensor to authenticate...");
+    match device.unlock()? {
+        DeviceMessage::Ok => println!("  ✓ Authenticated."),
+        DeviceMessage::Error { error } => anyhow::bail!("Authentication failed: {error}"),
+        other => anyhow::bail!("Unexpected response from unlock: {other:?}"),
     }
 
     println!();

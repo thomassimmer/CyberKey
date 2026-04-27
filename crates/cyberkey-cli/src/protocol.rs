@@ -74,6 +74,12 @@ pub enum Command {
 
     /// Open the BLE pairing window for one pairing attempt.
     AllowPairing,
+
+    /// Authenticate the CLI session with a fingerprint scan.
+    ///
+    /// The firmware prompts the user to place their finger on the sensor. On a
+    /// successful match the session is unlocked for 5 minutes.
+    Unlock,
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
@@ -559,6 +565,7 @@ mod tests {
                 confirm: "RESET".to_string(),
             },
             Command::AllowPairing,
+            Command::Unlock,
         ];
 
         for cmd in commands {

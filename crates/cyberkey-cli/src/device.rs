@@ -36,6 +36,10 @@ const GREETING_TIMEOUT: Duration = Duration::from_millis(2_000);
 /// Longer timeout for enrollment, which involves multiple physical interactions.
 const ENROLL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Timeout for the unlock command — the user needs to physically place their
+/// finger within this window.
+const UNLOCK_TIMEOUT: Duration = Duration::from_secs(30);
+
 // ── Port discovery ────────────────────────────────────────────────────────────
 
 /// Returns the names of all USB serial ports currently visible to the OS.
@@ -194,6 +198,26 @@ impl Device {
     pub fn call(&mut self, cmd: &Command) -> Result<DeviceMessage> {
         self.send(cmd)?;
         self.recv()
+    }
+
+    // ── Unlock ────────────────────────────────────────────────────────────────
+
+    /// Sends an `unlock` command and waits for the fingerprint authentication result.
+    ///
+    /// The read timeout is temporarily raised to [`UNLOCK_TIMEOUT`] to allow
+    /// the user to physically place their finger on the sensor. It is restored
+    /// after the command completes whether or not it succeeds.
+    pub fn unlock(&mut self) -> Result<DeviceMessage> {
+        self.reader
+            .get_mut()
+            .set_timeout(UNLOCK_TIMEOUT)
+            .context("failed to set unlock timeout")?;
+
+        let result = self.call(&Command::Unlock);
+
+        let _ = self.reader.get_mut().set_timeout(DEFAULT_TIMEOUT);
+
+        result
     }
 
     // ── Enrollment ────────────────────────────────────────────────────────────
