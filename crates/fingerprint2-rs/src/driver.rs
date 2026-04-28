@@ -365,7 +365,8 @@ where
     ) -> Result<(), FingerprintError<E>> {
         let [id_hi, id_lo] = id.to_be_bytes();
         self.send_command(&[PS_AUTO_ENROLL, id_hi, id_lo, count, 0x00, flags.as_byte()])?;
-        self.read_ack().map(|_| ())
+        self.read_ack()?;
+        Ok(())
     }
 
     /// Poll for one enrollment-pass ACK — **non-blocking**.
@@ -382,21 +383,22 @@ where
         }
     }
 
-    /// High-level autonomous identification.
+    /// High-level autonomous identification (1:N search across all enrolled templates).
     ///
-    /// Sends one `PS_AUTO_IDENTIFY` command and waits for a single ACK that
-    /// contains the matched page ID. Returns `Err(NoMatch)` when no enrolled
-    /// template matches the placed finger.
+    /// Sends one `PS_AUTO_IDENTIFY` command with `ID=0xFFFF` (full-library search)
+    /// and reads the stream of stage ACKs until the VERIFY stage returns the matched
+    /// page ID. Returns `Err(NoMatch)` when no enrolled template matches.
     ///
     /// # Parameters
     ///
-    /// - `security_level` — match threshold (1 = most permissive, 5 = strictest).
+    /// - `security_level` — match threshold (0 = most permissive, higher = stricter).
     ///
     /// Returns `Ok((page_id, score))` on a match.
     pub fn auto_identify(&mut self, security_level: u8) -> Result<(u16, u16), FingerprintError<E>> {
-        // U203 protocol requires: [opcode, level, start_page_hi, start_page_lo, capacity_hi, capacity_lo].
-        // Start 0 (0x0000), Capacity 200 (0x00C8) = search all 200 slots.
-        self.send_command(&[PS_AUTO_IDENTIFY, security_level, 0x00, 0x00, 0x00, 0xC8])?;
+        // U203 protocol: [opcode, level, id_hi, id_lo, flags_hi, flags_lo].
+        // ID=0xFFFF is the sentinel for a full 1:N identification across all enrolled templates.
+        // Any specific ID (e.g. 0x0000) triggers a 1:1 verification against that single slot only.
+        self.send_command(&[PS_AUTO_IDENTIFY, security_level, 0xFF, 0xFF, 0x00, 0x00])?;
 
         // The sensor sends a stream of stage-coded ACKs before the final result:
         //   data[1] = 0x00  LEGAL_CHECK  — discard
@@ -407,7 +409,6 @@ where
         loop {
             let frame = self.read_ack()?;
             let stage = frame.data.get(1).copied().unwrap_or(0);
-            log::info!("Stage reçu : {}", stage);
 
             if stage == 0x05 {
                 // VERIFY ACK: [0x00, 0x05, id_hi, id_lo, score_hi, score_lo]

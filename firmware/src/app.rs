@@ -301,6 +301,7 @@ where
                     match fp.poll_enroll_ack() {
                         fingerprint::EnrollAck::CaptureOk => {
                             pass += 1;
+                            log::info!("enroll slot={} CaptureOk pass={}/{}", request.slot, pass, PASSES);
                             let _ = request.reply.send(cli::EnrollResp::LiftFinger {
                                 step: pass,
                                 total: PASSES,
@@ -321,11 +322,13 @@ where
                             }
                         }
                         fingerprint::EnrollAck::Done => {
+                            log::info!("enroll slot={} Done (stored)", request.slot);
                             let _ = request.reply.send(cli::EnrollResp::Done);
                             display::show_enroll_ok(disp, &sb, request.slot);
                             break;
                         }
                         fingerprint::EnrollAck::Failed => {
+                            log::warn!("enroll slot={} Failed", request.slot);
                             let _ = request.reply.send(cli::EnrollResp::Failed);
                             display::show_status_2line(disp, &sb, "Enroll", "Failed");
                             break;

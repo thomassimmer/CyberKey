@@ -202,10 +202,7 @@ impl<'d> FingerprintSensor<'d> {
 
     fn execute_auto_identify(&mut self, via: &str) -> Option<IdentifyResult> {
         self.driver.drain_rx();
-        match self.driver.activate() {
-            Ok(()) => log::info!("fp: [{via}] activate OK"),
-            Err(e) => log::warn!("fp: [{via}] activate error {:?}", e),
-        }
+
         FreeRtos::delay_ms(50);
 
         log::info!("fp: [{via}] sending auto_identify...");

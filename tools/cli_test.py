@@ -16,7 +16,7 @@ Example session:
 Dependencies:
     pip install pyserial
 """
-import glob, serial, sys, time
+import glob, serial, sys, time, threading
 
 port = sys.argv[1] if len(sys.argv) > 1 else next(iter(glob.glob("/dev/cu.usbserial-*")), None)
 if not port:
@@ -26,16 +26,27 @@ s = serial.Serial(port, 115200, timeout=1)
 print(f"Connected to {port}. Type JSON commands, Ctrl-C to quit.")
 print("  $now is replaced by the current Unix timestamp.")
 
+def reader():
+    while True:
+        try:
+            line = s.readline().decode(errors="replace").rstrip("\r\n")
+            if line:
+                print(line, flush=True)
+        except Exception:
+            break
+
+threading.Thread(target=reader, daemon=True).start()
+
 while True:
+    sys.stdout.write("> ")
+    sys.stdout.flush()
     try:
-        cmd = input("> ")
-    except (EOFError, KeyboardInterrupt):
+        cmd = sys.stdin.readline()
+    except KeyboardInterrupt:
         print()
         break
-    cmd = cmd.replace("$now", str(int(time.time())))
-    s.write((cmd + "\n").encode())
-    time.sleep(0.4)
-    while s.in_waiting:
-        line = s.readline().decode(errors="replace").strip()
-        if line.startswith("{"):
-            print(line)
+    if not cmd:
+        break
+    cmd = cmd.strip().replace("$now", str(int(time.time())))
+    if cmd:
+        s.write((cmd + "\n").encode())
