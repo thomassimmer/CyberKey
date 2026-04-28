@@ -114,13 +114,28 @@ struct EnrollEvent {
 
 impl Resp {
     fn ok() -> Self {
-        Resp { ok: true, error: None, entries: None, slot: None }
+        Resp {
+            ok: true,
+            error: None,
+            entries: None,
+            slot: None,
+        }
     }
     fn ok_slot(slot: u8) -> Self {
-        Resp { ok: true, error: None, entries: None, slot: Some(slot) }
+        Resp {
+            ok: true,
+            error: None,
+            entries: None,
+            slot: Some(slot),
+        }
     }
     fn err(msg: impl Into<String>) -> Self {
-        Resp { ok: false, error: Some(msg.into()), entries: None, slot: None }
+        Resp {
+            ok: false,
+            error: Some(msg.into()),
+            entries: None,
+            slot: None,
+        }
     }
 }
 
@@ -253,9 +268,8 @@ fn handle_command(
             }
             // Refresh the 5-minute session window on each authenticated command.
             if *unlocked {
-                *unlock_until = Some(
-                    std::time::Instant::now() + std::time::Duration::from_secs(300),
-                );
+                *unlock_until =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(300));
             }
         }
     }
@@ -283,8 +297,7 @@ fn cmd_unlock(
 ) {
     if !has_any_entries(nvs) {
         *unlocked = true;
-        *unlock_until =
-            Some(std::time::Instant::now() + std::time::Duration::from_secs(300));
+        *unlock_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(300));
         return write_resp(uart, &Resp::ok());
     }
 
@@ -294,8 +307,7 @@ fn cmd_unlock(
     match rx.recv() {
         Ok(true) => {
             *unlocked = true;
-            *unlock_until =
-                Some(std::time::Instant::now() + std::time::Duration::from_secs(300));
+            *unlock_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(300));
             write_resp(uart, &Resp::ok());
         }
         Ok(false) | Err(_) => {
@@ -370,7 +382,10 @@ fn cmd_add_entry(
 
     // Hand the enrollment request to the main loop.
     let (tx, rx) = mpsc::sync_channel(16);
-    let _ = enroll_tx.send(EnrollRequest { slot: slot as u16, reply: tx });
+    let _ = enroll_tx.send(EnrollRequest {
+        slot: slot as u16,
+        reply: tx,
+    });
 
     // Stream enrollment progress events over serial until done or failed.
     loop {
@@ -432,7 +447,12 @@ fn cmd_list_entries(nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
             });
         }
     }
-    Resp { ok: true, error: None, entries: Some(entries), slot: None }
+    Resp {
+        ok: true,
+        error: None,
+        entries: Some(entries),
+        slot: None,
+    }
 }
 
 /// `remove_entry` — removes an entry by its service label (case-sensitive).

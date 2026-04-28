@@ -3,25 +3,23 @@
 //! BLE HID keyboard via esp32-nimble (NimBLE over ESP-IDF).
 //! The NimBLE host task runs inside FreeRTOS; `fn main()` is the user task.
 
-use std::{
-    sync::atomic::Ordering,
-    time::Duration,
-};
+use std::{sync::atomic::Ordering, time::Duration};
 
 use esp_idf_svc::{
     hal::{
         adc::{
             attenuation,
             oneshot::{
-                AdcChannelDriver, AdcDriver, config::{AdcChannelConfig, Calibration}
+                config::{AdcChannelConfig, Calibration},
+                AdcChannelDriver, AdcDriver,
             },
         },
         delay::{Delay, FreeRtos},
         gpio::{AnyIOPin, PinDriver},
         i2c::{I2cConfig, I2cDriver},
         peripherals::Peripherals,
-        spi::{SpiDeviceDriver, SpiDriver, SpiDriverConfig, config::Config as SpiConfig},
-        uart::{UartDriver, config::Config as UartConfig},
+        spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
+        uart::{config::Config as UartConfig, UartDriver},
         units::Hertz,
     },
     sys::{

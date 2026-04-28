@@ -8,7 +8,11 @@ use esp_idf_svc::hal::{
     i2c::I2cDriver,
 };
 
-use crate::{ble_hid, buttons::{ButtonEvent, POLL_MS}, cli, config_store, display, fingerprint, rtc};
+use crate::{
+    ble_hid,
+    buttons::{ButtonEvent, POLL_MS},
+    cli, config_store, display, fingerprint, rtc,
+};
 
 /// Boot-time check: if Button A is held for 5 s, prompt for a second press to confirm,
 /// then erase all fingerprint templates and NVS slots before rebooting.
@@ -301,7 +305,12 @@ where
                     match fp.poll_enroll_ack() {
                         fingerprint::EnrollAck::CaptureOk => {
                             pass += 1;
-                            log::info!("enroll slot={} CaptureOk pass={}/{}", request.slot, pass, PASSES);
+                            log::info!(
+                                "enroll slot={} CaptureOk pass={}/{}",
+                                request.slot,
+                                pass,
+                                PASSES
+                            );
                             let _ = request.reply.send(cli::EnrollResp::LiftFinger {
                                 step: pass,
                                 total: PASSES,
@@ -360,8 +369,7 @@ where
                 screen_on = true;
             }
             display::show_status_2line(disp, &sb, "CLI Auth", "Place finger");
-            let deadline =
-                std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             let matched = loop {
                 if std::time::Instant::now() > deadline {
                     break false;

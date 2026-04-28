@@ -242,7 +242,9 @@ fn action_sync_clock(device: &mut Device) -> anyhow::Result<()> {
         tz_offset_secs,
     })? {
         DeviceMessage::Ok => {
-            println!("  ✓ Device clock synced (Unix timestamp {timestamp}, UTC offset {tz_offset_secs:+}s).");
+            println!(
+                "  ✓ Device clock synced (Unix timestamp {timestamp}, UTC offset {tz_offset_secs:+}s)."
+            );
         }
         DeviceMessage::Error { error } => {
             println!("  ✗ {error}");

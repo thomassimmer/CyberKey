@@ -220,7 +220,11 @@ pub fn init(passkey: u32) -> BleHid {
                 .add_service_uuid(BleUuid::Uuid16(0x1812)),
         )
         .expect("BLE: failed to set advertising data");
-    device.get_advertising().lock().start().expect("BLE: failed to start advertising");
+    device
+        .get_advertising()
+        .lock()
+        .start()
+        .expect("BLE: failed to start advertising");
 
     log::info!("[BLE] advertising — PIN for first pairing: {:06}", passkey);
 

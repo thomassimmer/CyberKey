@@ -33,8 +33,12 @@ pub fn write(i2c: &mut I2cDriver, ts: u64) {
     match i2c.write(board::RTC_I2C_ADDR, &buf, BLOCK) {
         Ok(()) => log::info!(
             "RTC written: {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            dt.year(), dt.month() as u8, dt.day(),
-            dt.hour(), dt.minute(), dt.second()
+            dt.year(),
+            dt.month() as u8,
+            dt.day(),
+            dt.hour(),
+            dt.minute(),
+            dt.second()
         ),
         Err(e) => log::warn!("RTC write failed: {:?}", e),
     }
@@ -73,7 +77,13 @@ pub fn init(i2c: &mut I2cDriver) -> anyhow::Result<()> {
         Some(ts) => {
             log::info!(
                 "RTC: {:04}-{:02}-{:02} {:02}:{:02}:{:02} -> ts={}",
-                year, month, day, hour, min, sec, ts
+                year,
+                month,
+                day,
+                hour,
+                min,
+                sec,
+                ts
             );
             set_system_time(ts);
             Ok(())
