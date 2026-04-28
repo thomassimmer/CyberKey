@@ -16,15 +16,26 @@ Example session:
 Dependencies:
     pip install pyserial
 """
-import glob, serial, sys, time, threading
 
-port = sys.argv[1] if len(sys.argv) > 1 else next(iter(glob.glob("/dev/cu.usbserial-*")), None)
+import glob
+import sys
+import threading
+import time
+
+import serial
+
+port = (
+    sys.argv[1]
+    if len(sys.argv) > 1
+    else next(iter(glob.glob("/dev/cu.usbserial-*")), None)
+)
 if not port:
     sys.exit("No serial port found. Plug in the device or pass PORT as argument.")
 
 s = serial.Serial(port, 115200, timeout=1)
 print(f"Connected to {port}. Type JSON commands, Ctrl-C to quit.")
 print("  $now is replaced by the current Unix timestamp.")
+
 
 def reader():
     while True:
@@ -34,6 +45,7 @@ def reader():
                 print(line, flush=True)
         except Exception:
             break
+
 
 threading.Thread(target=reader, daemon=True).start()
 
