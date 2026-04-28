@@ -240,7 +240,7 @@ fn handle_command(
         // These commands are always allowed without authentication.
         "ping" | "sync_clock" => {}
         "unlock" => {
-            cmd_unlock(uart, verify_tx, unlocked, unlock_until);
+            cmd_unlock(uart, nvs, verify_tx, unlocked, unlock_until);
             return;
         }
         _ => {
@@ -270,12 +270,24 @@ fn handle_command(
 
 /// `unlock` — requests a fingerprint scan from the main loop and unlocks the CLI
 /// session on success.  Blocks until the main loop responds (up to 30 s).
+///
+/// If the device has no entries enrolled yet (bootstrap mode), the unlock
+/// succeeds immediately without requiring a fingerprint scan — consistent with
+/// the bootstrap-open gate that applies to all other commands.
 fn cmd_unlock(
     uart: &UartDriver<'static>,
+    nvs: &Arc<Mutex<SharedNvs>>,
     verify_tx: &VerifySender,
     unlocked: &mut bool,
     unlock_until: &mut Option<std::time::Instant>,
 ) {
+    if !has_any_entries(nvs) {
+        *unlocked = true;
+        *unlock_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(300));
+        return write_resp(uart, &Resp::ok());
+    }
+
     let (tx, rx) = mpsc::sync_channel(1);
     let _ = verify_tx.send(VerifyRequest { reply: tx });
     // Block until the main loop sends back a verdict (or channel closes on panic).
