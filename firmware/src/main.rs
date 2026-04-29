@@ -40,9 +40,9 @@ mod cli;
 mod config_store;
 mod display;
 mod fingerprint;
+mod fonts;
 mod hid;
 mod rtc;
-mod fonts;
 
 fn main() -> anyhow::Result<()> {
     link_patches();

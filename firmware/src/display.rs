@@ -16,8 +16,10 @@ use embedded_graphics::{
 };
 
 use crate::fonts::orbitron_font::{draw_text_prop, get_text_width};
+use crate::fonts::orbitron_large::{
+    draw_text_prop as draw_large, get_text_width as get_large_width,
+};
 use crate::fonts::orbitron_mini::{draw_text_prop as draw_mini, get_text_width as get_mini_width};
-use crate::fonts::orbitron_large::{draw_text_prop as draw_large, get_text_width as get_large_width};
 
 // ---------------------------------------------------------------------------
 // Layout
@@ -141,7 +143,7 @@ pub fn show_pin<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, pi
     clear_content(d);
     update_topbar(d, sb);
     draw_center(d, ">> BT PAIRING <<", CONTENT_CY - 40, NEON_CYAN);
-    
+
     let pin_str = format!("{:03} {:03}", pin / 1000, pin % 1000);
     draw_large_center(d, &pin_str, CONTENT_CY - 5, NEON_YELLOW);
 
