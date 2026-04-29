@@ -42,6 +42,7 @@ mod display;
 mod fingerprint;
 mod hid;
 mod rtc;
+mod fonts;
 
 fn main() -> anyhow::Result<()> {
     link_patches();

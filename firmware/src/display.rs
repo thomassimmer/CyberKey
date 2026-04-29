@@ -6,7 +6,7 @@
 
 use embedded_graphics::{
     mono_font::{
-        ascii::{FONT_10X20, FONT_5X8, FONT_6X10, FONT_6X13},
+        ascii::{FONT_5X8, FONT_6X10},
         MonoTextStyle,
     },
     pixelcolor::Rgb565,
@@ -15,6 +15,10 @@ use embedded_graphics::{
     text::{Alignment, Text, TextStyleBuilder},
 };
 
+use crate::fonts::orbitron_font::{draw_text_prop, get_text_width};
+use crate::fonts::orbitron_mini::{draw_text_prop as draw_mini, get_text_width as get_mini_width};
+use crate::fonts::orbitron_large::{draw_text_prop as draw_large, get_text_width as get_large_width};
+
 // ---------------------------------------------------------------------------
 // Layout
 // ---------------------------------------------------------------------------
@@ -22,10 +26,10 @@ use embedded_graphics::{
 pub const W: u32 = 240;
 pub const H: u32 = 135;
 
-const BAR_H: u32 = 20;
+const BAR_H: u32 = 30;
 const CONTENT_Y: i32 = BAR_H as i32;
 // Vertical centre of the content area.
-const CONTENT_CY: i32 = CONTENT_Y + (H as i32 - BAR_H as i32) / 2; // 77
+const CONTENT_CY: i32 = CONTENT_Y + (H as i32 - BAR_H as i32) / 2; // ~82
 
 // ---------------------------------------------------------------------------
 // Cyberpunk 2077 palette
@@ -68,12 +72,28 @@ fn clear_content<D: DrawTarget<Color = Rgb565>>(d: &mut D) {
         .draw(d);
 }
 
-fn ts_center() -> embedded_graphics::text::TextStyle {
-    TextStyleBuilder::new().alignment(Alignment::Center).build()
+fn draw_center<D: DrawTarget<Color = Rgb565>>(d: &mut D, text: &str, y: i32, color: Rgb565) {
+    let w = get_text_width(text);
+    let x = (W as i32 - w) / 2;
+    let _ = draw_text_prop(d, text, Point::new(x, y), color);
 }
 
-fn ts_right() -> embedded_graphics::text::TextStyle {
-    TextStyleBuilder::new().alignment(Alignment::Right).build()
+fn draw_right<D: DrawTarget<Color = Rgb565>>(d: &mut D, text: &str, y: i32, color: Rgb565) {
+    let w = get_text_width(text);
+    let x = W as i32 - w - 5;
+    let _ = draw_text_prop(d, text, Point::new(x, y), color);
+}
+
+fn draw_large_center<D: DrawTarget<Color = Rgb565>>(d: &mut D, text: &str, y: i32, color: Rgb565) {
+    let w = get_large_width(text);
+    let x = (W as i32 - w) / 2;
+    let _ = draw_large(d, text, Point::new(x, y), color);
+}
+
+fn draw_mini_right<D: DrawTarget<Color = Rgb565>>(d: &mut D, text: &str, y: i32, color: Rgb565) {
+    let w = get_mini_width(text);
+    let x = W as i32 - w - 5;
+    let _ = draw_mini(d, text, Point::new(x, y), color);
 }
 
 // ---------------------------------------------------------------------------
@@ -88,29 +108,18 @@ pub fn update_topbar<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_
         .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
         .draw(d);
 
-    // Time — yellow, left-aligned; baseline at y=13 gives 3 px top padding.
-    let _ = Text::new(
-        sb.time,
-        Point::new(3, 13),
-        MonoTextStyle::new(&FONT_6X10, NEON_YELLOW),
-    )
-    .draw(d);
+    // Time — yellow, left-aligned;
+    let _ = draw_mini(d, sb.time, Point::new(5, 7), NEON_YELLOW);
 
     // Battery — cyan (red when ≤ 20 %, dim when unknown), right-aligned.
     let (bat_str, bat_color) = match sb.battery {
         Some(pct) => (
-            format!("{:3}%", pct),
+            format!("{}%", pct),
             if pct <= 20 { NEON_RED } else { NEON_CYAN },
         ),
-        None => (" --%".to_string(), Rgb565::CSS_DARK_GRAY),
+        None => ("--%".to_string(), Rgb565::CSS_DARK_GRAY),
     };
-    let _ = Text::with_text_style(
-        &bat_str,
-        Point::new(W as i32 - 3, 13),
-        MonoTextStyle::new(&FONT_6X10, bat_color),
-        ts_right(),
-    )
-    .draw(d);
+    draw_mini_right(d, &bat_str, 7, bat_color);
 
     // Separator line
     let _ = Line::new(
@@ -131,27 +140,15 @@ pub fn update_topbar<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_
 pub fn show_pin<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, pin: u32) {
     clear_content(d);
     update_topbar(d, sb);
-    let cx = (W / 2) as i32;
-    let _ = Text::with_text_style(
-        ">> BT PAIRING <<",
-        Point::new(cx, CONTENT_CY - 22),
-        MonoTextStyle::new(&FONT_6X13, NEON_CYAN),
-        ts_center(),
-    )
-    .draw(d);
+    draw_center(d, ">> BT PAIRING <<", CONTENT_CY - 40, NEON_CYAN);
+    
     let pin_str = format!("{:03} {:03}", pin / 1000, pin % 1000);
-    let _ = Text::with_text_style(
-        &pin_str,
-        Point::new(cx, CONTENT_CY + 4),
-        MonoTextStyle::new(&FONT_10X20, NEON_YELLOW),
-        ts_center(),
-    )
-    .draw(d);
-    let _ = Text::with_text_style(
-        "enter on host",
-        Point::new(cx, CONTENT_CY + 26),
+    draw_large_center(d, &pin_str, CONTENT_CY - 5, NEON_YELLOW);
+
+    let _ = Text::new(
+        "ENTER ON HOST",
+        Point::new((W / 2) as i32 - 40, CONTENT_CY + 40),
         MonoTextStyle::new(&FONT_5X8, Rgb565::CSS_LIGHT_GRAY),
-        ts_center(),
     )
     .draw(d);
 }
@@ -160,13 +157,7 @@ pub fn show_pin<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, pi
 pub fn show_status<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, msg: &str) {
     clear_content(d);
     update_topbar(d, sb);
-    let _ = Text::with_text_style(
-        msg,
-        Point::new((W / 2) as i32, CONTENT_CY),
-        MonoTextStyle::new(&FONT_10X20, NEON_CYAN),
-        ts_center(),
-    )
-    .draw(d);
+    draw_center(d, &msg.to_uppercase(), CONTENT_CY - 10, NEON_CYAN);
 }
 
 /// Two-line status message centred in content area.
@@ -178,88 +169,39 @@ pub fn show_status_2line<D: DrawTarget<Color = Rgb565>>(
 ) {
     clear_content(d);
     update_topbar(d, sb);
-    let cx = (W / 2) as i32;
-    let style = MonoTextStyle::new(&FONT_6X13, NEON_CYAN);
-    let _ =
-        Text::with_text_style(line1, Point::new(cx, CONTENT_CY - 8), style, ts_center()).draw(d);
-    let _ =
-        Text::with_text_style(line2, Point::new(cx, CONTENT_CY + 8), style, ts_center()).draw(d);
+    draw_center(d, &line1.to_uppercase(), CONTENT_CY - 20, NEON_CYAN);
+    draw_center(d, &line2.to_uppercase(), CONTENT_CY + 10, NEON_CYAN);
 }
 
 /// Successful fingerprint match.
 pub fn show_auth_ok<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, page_id: u16) {
     clear_content(d);
     update_topbar(d, sb);
-    let cx = (W / 2) as i32;
-    let _ = Text::with_text_style(
-        "AUTH OK",
-        Point::new(cx, CONTENT_CY - 12),
-        MonoTextStyle::new(&FONT_10X20, NEON_GREEN),
-        ts_center(),
-    )
-    .draw(d);
-    let _ = Text::with_text_style(
-        &format!("ID: {}", page_id),
-        Point::new(cx, CONTENT_CY + 12),
-        MonoTextStyle::new(&FONT_10X20, NEON_CYAN),
-        ts_center(),
-    )
-    .draw(d);
+    draw_center(d, "AUTH OK", CONTENT_CY - 20, NEON_GREEN);
+    draw_center(d, &format!("ID: {}", page_id), CONTENT_CY + 10, NEON_CYAN);
 }
 
 /// Successful enrollment.
 pub fn show_enroll_ok<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, slot: u16) {
     clear_content(d);
     update_topbar(d, sb);
-    let cx = (W / 2) as i32;
-    let _ = Text::with_text_style(
-        "ENROLLED",
-        Point::new(cx, CONTENT_CY - 12),
-        MonoTextStyle::new(&FONT_10X20, NEON_GREEN),
-        ts_center(),
-    )
-    .draw(d);
-    let _ = Text::with_text_style(
-        &format!("SLOT {}", slot),
-        Point::new(cx, CONTENT_CY + 12),
-        MonoTextStyle::new(&FONT_10X20, NEON_CYAN),
-        ts_center(),
-    )
-    .draw(d);
+    draw_center(d, "ENROLLED", CONTENT_CY - 20, NEON_GREEN);
+    draw_center(d, &format!("SLOT {}", slot), CONTENT_CY + 10, NEON_CYAN);
 }
 
 /// Factory-reset confirmation screen.
 pub fn show_reset_ok<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>) {
     clear_content(d);
     update_topbar(d, sb);
-    let cx = (W / 2) as i32;
-    let _ = Text::with_text_style(
-        "RESET OK",
-        Point::new(cx, CONTENT_CY - 12),
-        MonoTextStyle::new(&FONT_10X20, NEON_GREEN),
-        ts_center(),
-    )
-    .draw(d);
-    let _ = Text::with_text_style(
-        "REBOOTING...",
-        Point::new(cx, CONTENT_CY + 12),
-        MonoTextStyle::new(&FONT_6X13, NEON_CYAN),
-        ts_center(),
-    )
-    .draw(d);
+    draw_center(d, "RESET OK", CONTENT_CY - 20, NEON_GREEN);
+    draw_center(d, "REBOOTING...", CONTENT_CY + 10, NEON_CYAN);
 }
 
 /// No fingerprint match.
 pub fn show_no_match<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>) {
     clear_content(d);
     update_topbar(d, sb);
-    let _ = Text::with_text_style(
-        "NO MATCH",
-        Point::new((W / 2) as i32, CONTENT_CY),
-        MonoTextStyle::new(&FONT_10X20, NEON_RED),
-        ts_center(),
-    )
-    .draw(d);
+    draw_center(d, "NO MATCH", CONTENT_CY - 10, NEON_RED);
 }
 
 /// TOTP code display.
@@ -271,19 +213,7 @@ pub fn show_no_match<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_
 pub fn show_totp<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, code: u32) {
     clear_content(d);
     update_topbar(d, sb);
-    let cx = (W / 2) as i32;
-    let _ = Text::with_text_style(
-        ">> TOTP <<",
-        Point::new(cx, CONTENT_CY - 20),
-        MonoTextStyle::new(&FONT_6X13, NEON_CYAN),
-        ts_center(),
-    )
-    .draw(d);
-    let _ = Text::with_text_style(
-        &format!("{:03} {:03}", code / 1000, code % 1000),
-        Point::new(cx, CONTENT_CY + 8),
-        MonoTextStyle::new(&FONT_10X20, NEON_GREEN),
-        ts_center(),
-    )
-    .draw(d);
+    draw_center(d, ">> TOTP <<", CONTENT_CY - 40, NEON_CYAN);
+    let code_str = format!("{:03} {:03}", code / 1000, code % 1000);
+    draw_large_center(d, &code_str, CONTENT_CY - 5, NEON_GREEN);
 }
