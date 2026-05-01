@@ -210,6 +210,7 @@ where
             if !screen_on {
                 backlight.set_high().ok();
                 screen_on = true;
+                fp.wake();
             }
             display::show_pin(disp, &sb, passkey, connected);
         }
@@ -220,6 +221,7 @@ where
             if !screen_on {
                 backlight.set_high().ok();
                 screen_on = true;
+                fp.wake();
             }
         }
         match btn_event {
@@ -314,6 +316,7 @@ where
             if !screen_on {
                 backlight.set_high().ok();
                 screen_on = true;
+                fp.wake();
             }
             const PASSES: u8 = 3;
             display::show_status_2line(disp, &sb, "CLI Enroll", "Place finger");
@@ -389,6 +392,7 @@ where
             if !screen_on {
                 backlight.set_high().ok();
                 screen_on = true;
+                fp.wake();
             }
             display::show_status_2line(disp, &sb, "CLI Auth", "Place finger");
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -425,6 +429,7 @@ where
                 if !screen_on {
                     backlight.set_high().ok();
                     screen_on = true;
+                    fp.wake();
                 }
                 display::show_auth_ok(disp, &sb, id);
 
@@ -480,6 +485,7 @@ where
                 if !screen_on {
                     backlight.set_high().ok();
                     screen_on = true;
+                    fp.wake();
                 }
                 display::show_no_match(disp, &sb);
                 FreeRtos::delay_ms(2000);
@@ -498,6 +504,7 @@ where
         if screen_on && inactivity_ticks >= SCREEN_TIMEOUT_TICKS {
             backlight.set_low().ok();
             screen_on = false;
+            fp.standby();
         }
 
         FreeRtos::delay_ms(if screen_on { POLL_MS } else { IDLE_POLL_MS });

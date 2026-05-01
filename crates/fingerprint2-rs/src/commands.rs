@@ -29,14 +29,16 @@ pub const PS_EMPTY: u8 = 0x0D;
 pub const PS_AUTO_ENROLL: u8 = 0x31;
 /// High-level autonomous identification — returns the matched page ID.
 pub const PS_AUTO_IDENTIFY: u8 = 0x32;
+/// Cancel auto enrollment or auto identification.
+pub const PS_CANCEL_AUTO_FLOW: u8 = 0x30;
 /// Verify that the module is powered on and responsive.
 pub const PS_HANDSHAKE: u8 = 0x35;
-/// Control the RGB LED ring.
-pub const PS_CONTROL_BLN: u8 = 0x3C;
 /// Set the operating mode of the sensor.
 pub const PS_SET_WORK_MODE: u8 = 0xD2;
-/// Activate the sensor (required after cold boot on some firmware versions).
-pub const PS_ACTIVATE: u8 = 0xD4;
+/// Set the sleep timeout (10-254 seconds).
+pub const PS_SET_SLEEP_TIME: u8 = 0xD0;
+/// Control the RGB LED ring.
+pub const PS_CONTROL_BLN: u8 = 0x3C;
 
 // ---------------------------------------------------------------------------
 // LedMode

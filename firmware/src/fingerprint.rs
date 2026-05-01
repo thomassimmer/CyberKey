@@ -14,7 +14,8 @@ use esp_idf_svc::hal::{
     units::Hertz,
 };
 use fingerprint2_rs::{
-    commands::AutoEnrollFlags, DriverEvent, Fingerprint2Driver, FingerprintError,
+    commands::{AutoEnrollFlags, LedColor, LedMode},
+    DriverEvent, Fingerprint2Driver, FingerprintError,
 };
 
 const BAUD: u32 = 115_200;
@@ -73,6 +74,10 @@ impl<'d> FingerprintSensor<'d> {
             Ok(()) => log::info!("Fingerprint: activate OK"),
             Err(e) => log::warn!("Fingerprint: activate = {:?} (continuing)", e),
         }
+
+        // Ensure we start in Active Mode (1) and LEDs are enabled
+        let _ = self.driver.set_work_mode(1);
+
         log::info!("Fingerprint: handshake...");
         match self.driver.handshake() {
             Ok(()) => {
@@ -198,6 +203,37 @@ impl<'d> FingerprintSensor<'d> {
         self.smart_poll_until =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
         log::info!("fp: reactivate -> smart poll armed for 10s after enrollment");
+    }
+
+    /// Put the sensor into a low-power standby state.
+    ///
+    /// Enables "Timed Sleep" mode (automatic sleep after 10s of inactivity).
+    pub fn standby(&mut self) {
+        if !self.ready {
+            return;
+        }
+        log::info!("fp: entering standby");
+        self.smart_poll_until = None;
+
+        self.driver.drain_rx();
+        let _ = self.driver.set_work_mode(0); // 0 = Timed Sleep
+        let _ = self.driver.set_sleep_time(10);
+    }
+
+    /// Wake the sensor from standby.
+    pub fn wake(&mut self) {
+        if !self.ready {
+            return;
+        }
+        log::info!("fp: waking up");
+        self.driver.drain_rx();
+
+        // Switch back to "Active Mode" (always-on, ready for commands).
+        let _ = self.driver.set_work_mode(1);
+        // Restore default idle LED (Blue breathing).
+        let _ = self.driver.set_led(LedMode::Breathing, LedColor::Blue, 0);
+
+        self.smart_poll_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
     }
 
     fn execute_auto_identify(&mut self, via: &str) -> Option<IdentifyResult> {

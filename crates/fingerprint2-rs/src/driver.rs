@@ -440,7 +440,8 @@ where
         color: LedColor,
         loops: u8,
     ) -> Result<(), FingerprintError<E>> {
-        self.send_command(&[PS_CONTROL_BLN, mode as u8, color as u8, loops])?;
+        // DATA payload: [Opcode, Mode, StartColor, EndColor, LoopCount]
+        self.send_command(&[PS_CONTROL_BLN, mode as u8, color as u8, color as u8, loops])?;
         self.read_ack()?;
         Ok(())
     }
@@ -469,6 +470,37 @@ where
     /// Erase the entire template library on the sensor (`PS_Empty`).
     pub fn empty_template_library(&mut self) -> Result<(), FingerprintError<E>> {
         self.send_command(&[crate::commands::PS_EMPTY])?;
+        self.read_ack()?;
+        Ok(())
+    }
+
+    /// Set the operating mode of the sensor.
+    ///
+    /// 0: Timed Sleep Mode
+    /// 1: Active Mode
+    pub fn set_work_mode(&mut self, mode: u8) -> Result<(), FingerprintError<E>> {
+        self.send_command(&[crate::commands::PS_SET_WORK_MODE, mode])?;
+        self.read_ack()?;
+        Ok(())
+    }
+
+    /// Set the sleep timeout in seconds (10-254).
+    pub fn set_sleep_time(&mut self, seconds: u8) -> Result<(), FingerprintError<E>> {
+        self.send_command(&[crate::commands::PS_SET_SLEEP_TIME, seconds])?;
+        self.read_ack()?;
+        Ok(())
+    }
+
+    /// Cancel any running auto enrollment or auto identification.
+    pub fn cancel_auto_flow(&mut self) -> Result<(), FingerprintError<E>> {
+        self.send_command(&[crate::commands::PS_CANCEL_AUTO_FLOW])?;
+        self.read_ack()?;
+        Ok(())
+    }
+
+    /// Cancel any running auto enrollment or auto identification.
+    pub fn cancel_auto_flow(&mut self) -> Result<(), FingerprintError<E>> {
+        self.send_command(&[crate::commands::PS_CANCEL_AUTO_FLOW])?;
         self.read_ack()?;
         Ok(())
     }
