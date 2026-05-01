@@ -28,10 +28,14 @@ pub enum IdentifyResult {
 
 /// Progress event returned by [`FingerprintSensor::poll_enroll_ack`].
 pub enum EnrollAck {
-    /// No data available yet, or an intermediate stage (GET_IMAGE, GEN_CHAR…).
+    /// No data available yet.
     Pending,
-    /// CHECK_LIFT (stage 0x03): one capture is complete — show "lift finger" UI.
-    CaptureOk,
+    /// GET_IMAGE (stage 0x01): sensor is waiting for/capturing a finger.
+    StartCapture,
+    /// GEN_CHAR (stage 0x02): capture complete, image being processed — safe to lift.
+    ImageOk,
+    /// CHECK_LIFT (stage 0x03): finger lift detected.
+    LiftOk,
     /// STORE_TEMPLATE (stage 0x06): all captures merged and stored — done.
     Done,
     /// Sensor returned a non-zero confirm code — enrollment failed.
@@ -148,7 +152,9 @@ impl<'d> FingerprintSensor<'d> {
                     data.as_slice()
                 );
                 match stage {
-                    0x03 => EnrollAck::CaptureOk,
+                    0x01 => EnrollAck::StartCapture,
+                    0x02 => EnrollAck::ImageOk,
+                    0x03 => EnrollAck::LiftOk,
                     0x06 => EnrollAck::Done,
                     _ => EnrollAck::Pending,
                 }

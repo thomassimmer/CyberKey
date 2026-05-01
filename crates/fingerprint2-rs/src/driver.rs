@@ -325,12 +325,15 @@ where
         Ok(())
     }
 
-    /// High-level autonomous enrollment.
+    /// Sends one `PS_AUTO_ENROLL` command and then reads the stream of stage ACKs.
     ///
-    /// Sends one `PS_AUTO_ENROLL` command and then reads `count` ACK frames —
-    /// the sensor emits one ACK per capture pass, prompting the user to
-    /// lift and re-place the finger between passes. Returns `Ok(())` only if
-    /// every capture pass succeeds.
+    /// For each capture pass, the sensor emits three intermediate ACKs:
+    ///   - Stage 0x01: Start capture (waiting for finger)
+    ///   - Stage 0x02: Image OK (captured, safe to lift)
+    ///   - Stage 0x03: Lift OK (finger removed)
+    ///
+    /// The final ACK (Stage 0x06) indicates the template has been merged and stored.
+    /// Returns `Ok(())` only if every capture pass and the final storage succeed.
     ///
     /// # Parameters
     ///
@@ -353,10 +356,9 @@ where
         Ok(())
     }
 
-    /// Send `PS_AUTO_ENROLL` without reading any ACK.
-    ///
-    /// Use [`Self::read_enroll_pass`] once per capture pass to receive each per-pass
-    /// ACK non-blockingly, so the caller can update a display between passes.
+    /// Use [`Self::read_enroll_pass`] repeatedly to receive each stage ACK
+    /// non-blockingly (0x01, 0x02, 0x03 per pass), allowing the caller to
+    /// update a display between captures.
     pub fn begin_auto_enroll(
         &mut self,
         id: u16,

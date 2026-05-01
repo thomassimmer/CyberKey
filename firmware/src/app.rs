@@ -335,50 +335,53 @@ where
         if let Ok(request) = enroll_rx.try_recv() {
             wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
             const PASSES: u8 = 3;
-            display::show_status_2line(disp, &sb, "CLI Enroll", "Place finger");
+            display::show_status_2line(disp, &sb, "Place finger", &format!("pass 1/{}", PASSES));
             if fp.begin_enroll(request.slot, PASSES) {
-                let _ = request.reply.send(cli::EnrollResp::PlaceFinger {
-                    step: 1,
-                    total: PASSES,
-                });
                 let mut pass = 0u8;
                 loop {
                     match fp.poll_enroll_ack() {
-                        fingerprint::EnrollAck::CaptureOk => {
+                        fingerprint::EnrollAck::StartCapture => {
+                            // Stage 0x01: sensor is waiting for a finger.
+                            let _ = request.reply.send(cli::EnrollResp::PlaceFinger {
+                                step: pass + 1,
+                                total: PASSES,
+                            });
+                        }
+                        fingerprint::EnrollAck::ImageOk => {
+                            // Stage 0x02: image taken successfully.
                             pass += 1;
-                            log::info!(
-                                "enroll slot={} CaptureOk pass={}/{}",
-                                request.slot,
-                                pass,
-                                PASSES
-                            );
                             let _ = request.reply.send(cli::EnrollResp::LiftFinger {
                                 step: pass,
                                 total: PASSES,
                             });
                             if pass < PASSES {
-                                let _ = request.reply.send(cli::EnrollResp::PlaceFinger {
-                                    step: pass + 1,
-                                    total: PASSES,
-                                });
                                 display::show_status_2line(
                                     disp,
                                     &sb,
-                                    "Lift + replace",
-                                    &format!("pass {}/{}", pass + 1, PASSES),
+                                    "Lift finger",
+                                    &format!("pass {}/{}", pass, PASSES),
                                 );
                             } else {
                                 display::show_status(disp, &sb, "Processing...");
                             }
                         }
+                        fingerprint::EnrollAck::LiftOk => {
+                            // Stage 0x03: finger lift detected.
+                            if pass < PASSES {
+                                display::show_status_2line(
+                                    disp,
+                                    &sb,
+                                    "Place finger",
+                                    &format!("pass {}/{}", pass + 1, PASSES),
+                                );
+                            }
+                        }
                         fingerprint::EnrollAck::Done => {
-                            log::info!("enroll slot={} Done (stored)", request.slot);
                             let _ = request.reply.send(cli::EnrollResp::Done);
                             display::show_enroll_ok(disp, &sb, request.slot);
                             break;
                         }
                         fingerprint::EnrollAck::Failed => {
-                            log::warn!("enroll slot={} Failed", request.slot);
                             let _ = request.reply.send(cli::EnrollResp::Failed);
                             display::show_status_2line(disp, &sb, "Enroll", "Failed");
                             break;

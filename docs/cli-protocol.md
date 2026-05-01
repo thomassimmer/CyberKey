@@ -149,6 +149,14 @@ This prevents a USB-connected malicious host from exfiltrating TOTP secrets with
 
 ## Enrollment Implementation Notes
 
+The enrollment flow is designed for high reactivity. For each capture pass, the sensor emits three distinct stage-coded ACKs:
+
+1. **Stage 0x01 (StartCapture)**: Sensor is ready. Firmware sends `place_finger` event to CLI.
+2. **Stage 0x02 (ImageOk)**: Image captured and being processed. Firmware sends `lift_finger` event immediately (user can lift now).
+3. **Stage 0x03 (LiftOk)**: Finger lift confirmed. Firmware prepares for the next pass.
+
+This 3-stage loop ensures the user is prompted to lift their finger as soon as the hardware is done with the capture, minimizing the required contact time.
+
 The `add_entry` flow uses two FreeRTOS tasks:
 
 - **CLI task** (runs on a FreeRTOS thread): receives the command, sends it to the main loop via `mpsc::sync_channel`, then blocks waiting for enrollment events.
