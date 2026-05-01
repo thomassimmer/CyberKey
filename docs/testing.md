@@ -106,9 +106,8 @@ cargo run --release   # builds, flashes, and opens serial monitor
 - [ ] If bonds exist: LCD shows "Connecting..." then "Connected" (or "Waiting..." if host is off)
 
 **Buttons:**
-- [ ] Button B short press: triggers "Hello!" HID test (types "Hello!" if BLE connected)
-- [ ] Button B long-press (3 s): opens BLE pairing window for 60 s
-- [ ] Button A long-press (3 s): prompts to confirm bond clear
+- [ ] Button B short press: opens BLE pairing window for 60 s
+- [ ] Button A long-press (1.5 s): prompts to confirm bond clear
 - [ ] Button A long-press × 2 within 10 s: erases bonds, reboots
 
 **BLE Pairing:**
@@ -144,4 +143,4 @@ cargo run --release   # builds, flashes, and opens serial monitor
 | BLE pairing | Manual only | No emulated BLE host |
 | NVS encryption | Not directly tested | Tested implicitly by add/list/remove on a flashed device |
 | Power management | Manual only | Light sleep behavior requires oscilloscope to verify current draw |
-| Long-press timing | Not unit-tested | Threshold (3 s = 150 polls × 20 ms) is a constant; test would be a tautology |
+| Long-press timing | Not unit-tested | Threshold (1.5 s) is a constant; test would be a tautology |

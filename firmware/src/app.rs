@@ -14,7 +14,7 @@ use crate::{
     cli, config_store, display, fingerprint, rtc,
 };
 
-/// Boot-time check: if Button A is held for 5 s, prompt for a second press to confirm,
+/// Boot-time check: if Button A is held for 2 s, prompt for a second press to confirm,
 /// then erase all fingerprint templates and NVS slots before rebooting.
 fn check_boot_factory_reset<D, A, B, C>(
     buttons: &crate::buttons::Buttons<'_, A, B, C>,
@@ -29,14 +29,19 @@ fn check_boot_factory_reset<D, A, B, C>(
     C: InputPin,
 {
     const POLL_MS: u32 = 20;
-    const HOLD_TARGET: u32 = 5_000 / POLL_MS; // 250 polls = 5 s
+    const HOLD_MS: u128 = 2_000;
 
-    let mut hold: u32 = 0;
-    while buttons.is_a_down() && hold < HOLD_TARGET {
-        hold += 1;
+    let start = std::time::Instant::now();
+    let held = loop {
+        if !buttons.is_a_down() {
+            break false;
+        }
+        if start.elapsed().as_millis() >= HOLD_MS {
+            break true;
+        }
         FreeRtos::delay_ms(POLL_MS);
-    }
-    if hold < HOLD_TARGET {
+    };
+    if !held {
         return;
     }
 
@@ -46,8 +51,9 @@ fn check_boot_factory_reset<D, A, B, C>(
         FreeRtos::delay_ms(POLL_MS);
     }
 
+    let confirm_start = std::time::Instant::now();
     let mut confirmed = false;
-    for _ in 0..(10_000 / POLL_MS) {
+    while confirm_start.elapsed().as_millis() < 10_000 {
         FreeRtos::delay_ms(POLL_MS);
         if buttons.is_a_down() {
             confirmed = true;
