@@ -428,7 +428,6 @@ where
         match fp.poll() {
             Some(fingerprint::IdentifyResult::Match(id)) => {
                 wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
-                display::show_auth_ok(disp, &sb, id);
 
                 let key = format!("slot_{}", id);
                 let mut buf = [0u8; 65];

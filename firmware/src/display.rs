@@ -181,14 +181,6 @@ pub fn show_status_2line<D: DrawTarget<Color = Rgb565>>(
     draw_mini_center(d, &line2.to_uppercase(), CONTENT_CY + 10, NEON_CYAN);
 }
 
-/// Successful fingerprint match.
-pub fn show_auth_ok<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, page_id: u16) {
-    clear_content(d);
-    update_topbar(d, sb);
-    draw_center(d, "AUTH OK", CONTENT_CY - 20, NEON_GREEN);
-    draw_center(d, &format!("ID: {}", page_id), CONTENT_CY + 10, NEON_CYAN);
-}
-
 /// Successful enrollment.
 pub fn show_enroll_ok<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, slot: u16) {
     clear_content(d);
