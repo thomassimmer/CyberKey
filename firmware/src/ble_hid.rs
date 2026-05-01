@@ -40,10 +40,10 @@ const HID_DESCRIPTOR: &[u8] = &[
 
 /// True when the host has written [0x01, 0x00] to the CCCD (notifications enabled).
 /// Only set this state when it is safe to call notify() on the input_report.
-static SUBSCRIBED: AtomicBool = AtomicBool::new(false);
+static SUBSCRIBED: AtomicU32 = AtomicU32::new(0);
 
-/// Exposed to the UI loop: same meaning as SUBSCRIBED (safe to type keystrokes).
-pub static CONNECTED: AtomicBool = AtomicBool::new(false);
+/// Exposed to the UI loop: number of active BLE links.
+pub static CONNECTED: AtomicU32 = AtomicU32::new(0);
 
 /// UI sets this to request a bond-clear + reboot. Checked each iteration of
 /// the main loop and also honoured here after disconnect.
@@ -74,8 +74,8 @@ impl BleHid {
     ///
     /// No-op if the host has not yet subscribed to HID notifications.
     pub fn type_string(&self, text: &str) {
-        if !SUBSCRIBED.load(Ordering::Relaxed) {
-            log::warn!("[HID] not subscribed — dropping '{}'", text);
+        if SUBSCRIBED.load(Ordering::Relaxed) == 0 {
+            log::warn!("[HID] no active subscriptions — dropping '{}'", text);
             return;
         }
         for byte in text.bytes() {
@@ -101,8 +101,8 @@ impl BleHid {
     /// wrong characters on non-QWERTY layouts (e.g. AZERTY gives "àéèç...").
     /// Numpad keycodes (0x59–0x62) are always interpreted as digits by the host OS.
     pub fn type_digits(&self, digits: &str) {
-        if !SUBSCRIBED.load(Ordering::Relaxed) {
-            log::warn!("[HID] not subscribed — dropping digits");
+        if SUBSCRIBED.load(Ordering::Relaxed) == 0 {
+            log::warn!("[HID] no active subscriptions — dropping digits");
             return;
         }
         for byte in digits.bytes() {
@@ -175,12 +175,29 @@ pub fn init(passkey: u32) -> BleHid {
     // bond, macOS writes the CCCD (re-enabling notifications) *before* the GAP
     // connect event fires — resetting here would erase that subscription.
     server.on_connect(|_, desc| {
-        log::info!("[BLE] link connected: {:?}", desc.address());
+        let count = CONNECTED.fetch_add(1, Ordering::Relaxed) + 1;
+        log::info!(
+            "[BLE] link connected: {:?} (total: {})",
+            desc.address(),
+            count
+        );
+        // If the pairing window is still open and we have slots, keep/restart advertising.
+        if PAIRING_ALLOWED.load(Ordering::Relaxed) && count < 3 {
+            let _ = BLEDevice::take().get_advertising().lock().start();
+        }
     });
     server.on_disconnect(|desc, _| {
-        log::info!("[BLE] disconnected: {:?}", desc.address());
-        SUBSCRIBED.store(false, Ordering::Relaxed);
-        CONNECTED.store(false, Ordering::Relaxed);
+        let count = CONNECTED.fetch_sub(1, Ordering::Relaxed) - 1;
+        log::info!(
+            "[BLE] disconnected: {:?} (total: {})",
+            desc.address(),
+            count
+        );
+        // We don't automatically restart advertising here; advertising is only
+        // enabled while the pairing window is explicitly open.
+        if count == 0 {
+            SUBSCRIBED.store(0, Ordering::Relaxed);
+        }
     });
     // Return the real passkey only when the pairing window is explicitly open.
     // Bonded peers reconnect via LTK and never trigger this callback.
@@ -198,8 +215,11 @@ pub fn init(passkey: u32) -> BleHid {
     input.lock().on_subscribe(|_chr, _desc, sub| {
         let notifying = sub.contains(NimbleSub::NOTIFY);
         log::info!("[BLE] CCCD write — notify={}", notifying);
-        SUBSCRIBED.store(notifying, Ordering::Relaxed);
-        CONNECTED.store(notifying, Ordering::Relaxed);
+        if notifying {
+            SUBSCRIBED.fetch_add(1, Ordering::Relaxed);
+        } else {
+            SUBSCRIBED.fetch_sub(1, Ordering::Relaxed);
+        }
     });
 
     hid.manufacturer("CyberKey");
@@ -210,21 +230,8 @@ pub fn init(passkey: u32) -> BleHid {
     hid.report_map(HID_DESCRIPTOR);
     hid.set_battery_level(100);
 
-    device
-        .get_advertising()
-        .lock()
-        .set_data(
-            BLEAdvertisementData::new()
-                .name("CyberKey")
-                .appearance(0x03C1) // Bluetooth SIG: Keyboard
-                .add_service_uuid(BleUuid::Uuid16(0x1812)),
-        )
-        .expect("BLE: failed to set advertising data");
-    device
-        .get_advertising()
-        .lock()
-        .start()
-        .expect("BLE: failed to start advertising");
+    // Advertising is NOT started here; it's only enabled when the pairing
+    // window is explicitly opened by the user.
 
     log::info!("[BLE] advertising — PIN for first pairing: {:06}", passkey);
 
@@ -265,11 +272,31 @@ pub fn open_pairing_window(passkey: u32) {
     CURRENT_PASSKEY.store(passkey, Ordering::Relaxed);
     PAIRING_ALLOWED.store(true, Ordering::Relaxed);
     log::info!("[BLE] pairing window open — PIN {:06}", passkey);
+    start_advertising();
 }
 
-/// Close the pairing window: clear PAIRING_ALLOWED so the callback starts
-/// returning random junk.  Bonded peers are unaffected (they use the LTK).
+/// Start advertising for reconnection only (no new pairings allowed).
+pub fn start_background_sync() {
+    PAIRING_ALLOWED.store(false, Ordering::Relaxed);
+    log::info!("[BLE] background sync started (bonded only)");
+    start_advertising();
+}
+
+fn start_advertising() {
+    let device = BLEDevice::take();
+    let mut adv = device.get_advertising().lock();
+    let _ = adv.set_data(
+        BLEAdvertisementData::new()
+            .name("CyberKey")
+            .appearance(0x03C1)
+            .add_service_uuid(BleUuid::Uuid16(0x1812)),
+    );
+    let _ = adv.start();
+}
+
+/// Close the pairing window: stop advertising and clear PAIRING_ALLOWED.
 pub fn close_pairing_window() {
     PAIRING_ALLOWED.store(false, Ordering::Relaxed);
+    let _ = BLEDevice::take().get_advertising().lock().stop();
     log::info!("[BLE] pairing window closed");
 }

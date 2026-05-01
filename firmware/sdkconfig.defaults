@@ -2,7 +2,8 @@
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_CONTROLLER_ONLY=n
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
+CONFIG_BTDM_CTRL_BLE_MAX_CONN=3
 
 # Persist bond keys (LTK + IRK) across power cycles.
 # Without this, NimBLE uses a RAM-only store: the bond is lost on every reboot,

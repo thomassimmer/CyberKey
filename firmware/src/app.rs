@@ -98,7 +98,7 @@ where
     BL: OutputPin,
     F: FnMut() -> Option<u8>,
 {
-    let mut last_connected = false;
+    let mut last_connected = 0u32;
     let mut pending_bond_clear = false;
 
     let mut battery: Option<u8> = read_battery();
@@ -119,15 +119,18 @@ where
     // pairing_auto_close_at == 0 means no expiry (first-boot window stays
     // open until the first connection closes it).
     let has_bonds_at_boot = ble_hid::has_bonds();
-    let mut pairing_open = !has_bonds_at_boot;
+    let mut pairing_open = true; // Always start open to allow reconnect or first-pair
     let mut pairing_auto_close_at: u64 = 0;
 
-    if pairing_open {
-        ble_hid::open_pairing_window(passkey);
-        display::show_pin(disp, &sb_boot, passkey);
+    if has_bonds_at_boot {
+        // Silent background sync for 15 seconds.
+        pairing_auto_close_at = unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64 + 15;
+        ble_hid::start_background_sync();
+        display::show_status(disp, &sb_boot, "Press B to pair");
     } else {
-        ble_hid::close_pairing_window();
-        display::show_status_2line(disp, &sb_boot, "Hold B", "to pair");
+        // First boot or no bonds: stay open until first connection.
+        ble_hid::open_pairing_window(passkey);
+        display::show_pin(disp, &sb_boot, passkey, 0);
     }
 
     loop {
@@ -165,17 +168,19 @@ where
         if connected != last_connected {
             last_connected = connected;
             pending_bond_clear = false;
-            if connected {
-                if pairing_open {
-                    ble_hid::close_pairing_window();
-                    pairing_open = false;
-                    pairing_auto_close_at = 0;
+
+            if pairing_open {
+                if ble_hid::PAIRING_ALLOWED.load(Ordering::Relaxed) {
+                    display::show_pin(disp, &sb, passkey, connected);
+                } else if connected > 0 {
+                    display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
+                } else {
+                    display::show_status(disp, &sb, "Press B to pair");
                 }
-                display::show_status(disp, &sb, "Connected");
-            } else if pairing_open {
-                display::show_pin(disp, &sb, passkey);
+            } else if connected > 0 {
+                display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
             } else {
-                display::show_status_2line(disp, &sb, "Hold B", "to pair");
+                display::show_status(disp, &sb, "Press B to pair");
             }
         }
 
@@ -186,14 +191,16 @@ where
                 ble_hid::close_pairing_window();
                 pairing_open = false;
                 pairing_auto_close_at = 0;
-                if !connected {
-                    display::show_status_2line(disp, &sb, "Hold B", "to pair");
+                if connected == 0 {
+                    display::show_status(disp, &sb, "Press B to pair");
+                } else {
+                    display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
                 }
             }
         }
 
         // CLI allow_pairing: generate a fresh passkey and open a 60-second window.
-        if ble_hid::OPEN_PAIRING_REQUESTED.swap(false, Ordering::Relaxed) && !connected {
+        if ble_hid::OPEN_PAIRING_REQUESTED.swap(false, Ordering::Relaxed) {
             passkey = unsafe { esp_idf_svc::sys::esp_random() } % 1_000_000;
             ble_hid::open_pairing_window(passkey);
             pairing_open = true;
@@ -204,7 +211,7 @@ where
                 backlight.set_high().ok();
                 screen_on = true;
             }
-            display::show_pin(disp, &sb, passkey);
+            display::show_pin(disp, &sb, passkey, connected);
         }
 
         let btn_event = buttons.poll();
@@ -229,30 +236,45 @@ where
             Some(ButtonEvent::AShortPress) => {
                 if pending_bond_clear {
                     pending_bond_clear = false;
-                    if connected {
-                        display::show_status(disp, &sb, "Connected");
+                    if connected > 0 {
+                        display::show_status_mini(
+                            disp,
+                            &sb,
+                            &format!("ACTIVE CLIENTS: {}", connected),
+                        );
                     } else if pairing_open {
-                        display::show_pin(disp, &sb, passkey);
+                        display::show_pin(disp, &sb, passkey, connected);
                     } else {
-                        display::show_status_2line(disp, &sb, "Hold B", "to pair");
+                        display::show_status(disp, &sb, "Press B to pair");
                     }
                 }
             }
             Some(ButtonEvent::BLongPress) => {
                 pending_bond_clear = false;
-                if !connected && !pairing_open {
+                // Reserved for future use
+            }
+            Some(ButtonEvent::BShortPress) => {
+                pending_bond_clear = false;
+                if pairing_open {
+                    ble_hid::close_pairing_window();
+                    pairing_open = false;
+                    pairing_auto_close_at = 0;
+                    if connected > 0 {
+                        display::show_status_mini(
+                            disp,
+                            &sb,
+                            &format!("ACTIVE CLIENTS: {}", connected),
+                        );
+                    } else {
+                        display::show_status(disp, &sb, "Press B to pair");
+                    }
+                } else {
                     passkey = unsafe { esp_idf_svc::sys::esp_random() } % 1_000_000;
                     ble_hid::open_pairing_window(passkey);
                     pairing_open = true;
                     pairing_auto_close_at =
                         unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64 + 60;
-                    display::show_pin(disp, &sb, passkey);
-                }
-            }
-            Some(ButtonEvent::BShortPress) => {
-                pending_bond_clear = false;
-                if connected {
-                    ble.type_string("Hello!");
+                    display::show_pin(disp, &sb, passkey, connected);
                 }
             }
             Some(ButtonEvent::CPowerLongPress) => {
@@ -352,12 +374,12 @@ where
             }
             fp.reactivate();
             FreeRtos::delay_ms(2000);
-            if connected {
-                display::show_status(disp, &sb, "Connected");
+            if connected > 0 {
+                display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
             } else if pairing_open {
-                display::show_pin(disp, &sb, passkey);
+                display::show_pin(disp, &sb, passkey, connected);
             } else {
-                display::show_status_2line(disp, &sb, "Hold B", "to pair");
+                display::show_status(disp, &sb, "Press B to pair");
             }
         }
 
@@ -387,12 +409,12 @@ where
                 display::show_status(disp, &sb, "Auth Failed");
             }
             FreeRtos::delay_ms(1500);
-            if connected {
-                display::show_status(disp, &sb, "Connected");
+            if connected > 0 {
+                display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
             } else if pairing_open {
-                display::show_pin(disp, &sb, passkey);
+                display::show_pin(disp, &sb, passkey, connected);
             } else {
-                display::show_status_2line(disp, &sb, "Hold B", "to pair");
+                display::show_status(disp, &sb, "Press B to pair");
             }
         }
 
@@ -431,7 +453,7 @@ where
                     match result {
                         Ok(code) => {
                             display::show_totp(disp, &sb, code);
-                            if connected {
+                            if connected > 0 {
                                 ble.type_digits(&format!("{:06}", code));
                                 log::info!("TOTP typed: {:06}", code);
                             } else {
@@ -445,12 +467,12 @@ where
                 }
 
                 FreeRtos::delay_ms(2000);
-                if connected {
-                    display::show_status(disp, &sb, "Connected");
+                if connected > 0 {
+                    display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
                 } else if pairing_open {
-                    display::show_pin(disp, &sb, passkey);
+                    display::show_pin(disp, &sb, passkey, connected);
                 } else {
-                    display::show_status_2line(disp, &sb, "Hold B", "to pair");
+                    display::show_status(disp, &sb, "Press B to pair");
                 }
             }
             Some(fingerprint::IdentifyResult::NoMatch) => {
@@ -461,12 +483,12 @@ where
                 }
                 display::show_no_match(disp, &sb);
                 FreeRtos::delay_ms(2000);
-                if connected {
-                    display::show_status(disp, &sb, "Connected");
+                if connected > 0 {
+                    display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
                 } else if pairing_open {
-                    display::show_pin(disp, &sb, passkey);
+                    display::show_pin(disp, &sb, passkey, connected);
                 } else {
-                    display::show_status_2line(disp, &sb, "Hold B", "to pair");
+                    display::show_status(disp, &sb, "Press B to pair");
                 }
             }
             None => {}

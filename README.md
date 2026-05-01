@@ -20,11 +20,11 @@ Built on the **M5StickC Plus 2** (ESP32). Pairs with macOS, Windows, and Linux a
 │                           ↓                  │
 │                        TOTP code             │
 │                           ↓                  │
-│  NimBLE HID keyboard ──→  type it            │
+│  NimBLE HID keyboard ──→  broadcast          │
 └──────────────────────────────────────────────┘
-                  │ BLE
-                  ▼
-           Host computer
+          │ BLE             │               │
+          ▼                 ▼               ▼
+    Host computer 1   Host computer 2   Host computer 3
 ```
 
 One finger = one service. Place the enrolled finger, the device matches it, generates the 6-digit code, and types it via BLE. Wrong finger → red LED, nothing typed.

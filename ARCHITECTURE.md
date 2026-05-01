@@ -25,10 +25,11 @@ No phone, no app, no network at authentication time.
 │  ST7789V2 LCD (SPI)                                      │
 │  Fingerprint2 sensor (UART1)                             │
 └──────────────────────────────────────────────────────────┘
-             │ BLE (HID keyboard)
+             │ BLE (HID keyboard, up to 3 links)
              ▼
-      Host computer
-      (macOS / Windows / Linux)
+      ┌──────────────┬──────────────┐
+      ▼              ▼              ▼
+Host computer 1 Host computer 2 Host computer 3
 
              │ USB-C serial (115.2k bps)
              ▼

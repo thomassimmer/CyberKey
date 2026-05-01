@@ -31,7 +31,7 @@ The project currently uses three sizes:
 3.  **Large (size 20)**: `orbitron_large.rs` - Used for security codes (PIN and TOTP).
 
 ## 4. Usage in Rust
-Generated fonts are not standard `MonoFont` objects but use a custom drawing function to handle proportional spacing.
+Generated fonts are used exclusively for the UI to maintain a cyberpunk aesthetic. Standard `embedded-graphics` mono fonts are completely replaced by custom proportional drawing functions.
 
 ```rust
 use crate::orbitron_font::{draw_text_prop, get_text_width};

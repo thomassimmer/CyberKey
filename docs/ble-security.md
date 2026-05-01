@@ -67,10 +67,12 @@ Subsequent connections are automatic: the host sends its identity resolving key 
 
 ### Opening and Closing the Pairing Window
 
+- **Manual open/close**: Button B short-press toggles the pairing window. When open, a 6-digit random passkey is displayed.
+- **Silent Background Sync**: at boot, if bonds exist, the device advertises for 15 seconds without allowing new pairings (`PAIRING_ALLOWED = false`). This allows known hosts to reconnect silently in the background.
 - **Auto-open at boot**: if NVS contains no bonds, the pairing window opens automatically.
-- **Manual open**: Button B long-press or CLI `allow_pairing` command opens a 60-second window.
-- **Auto-close**: window closes after the first successful bond, or after 60 seconds with no pairing.
-- **Clear bonds**: Button A long-press × 2 erases all NVS bonds and reboots. This is the "switch to a new computer" workflow.
+- **Auto-close**: window closes after 60 seconds with no pairing, or manually via Button B.
+- **Multi-host support**: up to 3 simultaneous connections are supported. HID reports are broadcast to all connected and subscribed hosts.
+- **Clear bonds**: Button A long-press × 2 erases all NVS bonds and reboots.
 
 ---
 

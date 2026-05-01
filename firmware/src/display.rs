@@ -5,14 +5,9 @@
 //! Content area: y = 20..135 (115 px tall).
 
 use embedded_graphics::{
-    mono_font::{
-        ascii::{FONT_5X8, FONT_6X10},
-        MonoTextStyle,
-    },
     pixelcolor::Rgb565,
     prelude::*,
     primitives::{Line, PrimitiveStyle, Rectangle},
-    text::{Alignment, Text, TextStyleBuilder},
 };
 
 use crate::fonts::orbitron_font::{draw_text_prop, get_text_width};
@@ -41,6 +36,9 @@ const NEON_YELLOW: Rgb565 = Rgb565::YELLOW;
 const NEON_CYAN: Rgb565 = Rgb565::CYAN;
 const NEON_GREEN: Rgb565 = Rgb565::GREEN;
 const NEON_RED: Rgb565 = Rgb565::RED;
+
+/// Dark cyan for status bar background (simulates low-opacity NEON_CYAN).
+const BAR_BG: Rgb565 = Rgb565::new(0, 4, 2);
 
 // ---------------------------------------------------------------------------
 // Status-bar data
@@ -98,6 +96,12 @@ fn draw_mini_right<D: DrawTarget<Color = Rgb565>>(d: &mut D, text: &str, y: i32,
     let _ = draw_mini(d, text, Point::new(x, y), color);
 }
 
+fn draw_mini_center<D: DrawTarget<Color = Rgb565>>(d: &mut D, text: &str, y: i32, color: Rgb565) {
+    let w = get_mini_width(text);
+    let x = (W as i32 - w) / 2;
+    let _ = draw_mini(d, text, Point::new(x, y), color);
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -107,11 +111,11 @@ fn draw_mini_right<D: DrawTarget<Color = Rgb565>>(d: &mut D, text: &str, y: i32,
 pub fn update_topbar<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>) {
     // Background
     let _ = Rectangle::new(Point::new(0, 0), Size::new(W, BAR_H))
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .into_styled(PrimitiveStyle::with_fill(BAR_BG))
         .draw(d);
 
     // Time — yellow, left-aligned;
-    let _ = draw_mini(d, sb.time, Point::new(5, 7), NEON_YELLOW);
+    let _ = draw_mini(d, sb.time, Point::new(5, 7), NEON_CYAN);
 
     // Battery — cyan (red when ≤ 20 %, dim when unknown), right-aligned.
     let (bat_str, bat_color) = match sb.battery {
@@ -119,7 +123,7 @@ pub fn update_topbar<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_
             format!("{}%", pct),
             if pct <= 20 { NEON_RED } else { NEON_CYAN },
         ),
-        None => ("--%".to_string(), Rgb565::CSS_DARK_GRAY),
+        None => ("--%".to_string(), NEON_CYAN),
     };
     draw_mini_right(d, &bat_str, 7, bat_color);
 
@@ -128,7 +132,7 @@ pub fn update_topbar<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_
         Point::new(0, BAR_H as i32 - 1),
         Point::new(W as i32 - 1, BAR_H as i32 - 1),
     )
-    .into_styled(PrimitiveStyle::with_stroke(NEON_CYAN, 1))
+    .into_styled(PrimitiveStyle::with_stroke(NEON_YELLOW, 1))
     .draw(d);
 }
 
@@ -139,27 +143,35 @@ pub fn update_topbar<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_
 ///    XXX XXX
 ///  enter on host
 /// ```
-pub fn show_pin<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, pin: u32) {
+pub fn show_pin<D: DrawTarget<Color = Rgb565>>(
+    d: &mut D,
+    sb: &StatusBar<'_>,
+    pin: u32,
+    conn_count: u32,
+) {
     clear_content(d);
     update_topbar(d, sb);
-    draw_center(d, ">> BT PAIRING <<", CONTENT_CY - 40, NEON_CYAN);
+    draw_mini_center(d, ">> BT PAIRING <<", CONTENT_CY - 40, NEON_CYAN);
 
     let pin_str = format!("{:03} {:03}", pin / 1000, pin % 1000);
-    draw_large_center(d, &pin_str, CONTENT_CY - 5, NEON_YELLOW);
+    draw_large_center(d, &pin_str, CONTENT_CY - 15, NEON_YELLOW);
 
-    let _ = Text::new(
-        "ENTER ON HOST",
-        Point::new((W / 2) as i32 - 40, CONTENT_CY + 40),
-        MonoTextStyle::new(&FONT_5X8, Rgb565::CSS_LIGHT_GRAY),
-    )
-    .draw(d);
+    let status_str = format!("ACTIVE CLIENTS: {}", conn_count);
+    draw_mini_center(d, &status_str, CONTENT_CY + 25, NEON_CYAN);
 }
 
 /// Single-line status message centred in content area.
 pub fn show_status<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, msg: &str) {
     clear_content(d);
     update_topbar(d, sb);
-    draw_center(d, &msg.to_uppercase(), CONTENT_CY - 10, NEON_CYAN);
+    draw_mini_center(d, &msg.to_uppercase(), CONTENT_CY - 10, NEON_CYAN);
+}
+
+/// Single-line status message using the mini font.
+pub fn show_status_mini<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, msg: &str) {
+    clear_content(d);
+    update_topbar(d, sb);
+    draw_mini_center(d, &msg.to_uppercase(), CONTENT_CY - 10, NEON_CYAN);
 }
 
 /// Two-line status message centred in content area.
@@ -171,8 +183,8 @@ pub fn show_status_2line<D: DrawTarget<Color = Rgb565>>(
 ) {
     clear_content(d);
     update_topbar(d, sb);
-    draw_center(d, &line1.to_uppercase(), CONTENT_CY - 20, NEON_CYAN);
-    draw_center(d, &line2.to_uppercase(), CONTENT_CY + 10, NEON_CYAN);
+    draw_mini_center(d, &line1.to_uppercase(), CONTENT_CY - 20, NEON_CYAN);
+    draw_mini_center(d, &line2.to_uppercase(), CONTENT_CY + 10, NEON_CYAN);
 }
 
 /// Successful fingerprint match.
