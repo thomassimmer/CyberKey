@@ -296,14 +296,12 @@ fn handle_command(
         }
     }
 
+    // add_entry streams multiple JSON lines before the final response; all other
+    // commands produce a single Resp that we write here.
     if cmd.cmd == "add_entry" {
         cmd_add_entry(uart, &cmd, nvs, enroll_tx);
-    } else if cmd.cmd == "remove_entry" {
-        let resp = cmd_remove_entry(&cmd, nvs, delete_tx);
-        write_resp(uart, &resp);
     } else {
-        let resp = dispatch(&cmd, nvs);
-        write_resp(uart, &resp);
+        write_resp(uart, &dispatch(&cmd, nvs, delete_tx));
     }
 }
 
@@ -341,10 +339,11 @@ fn cmd_unlock(
     }
 }
 
-fn dispatch(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
+fn dispatch(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>, delete_tx: &DeleteSender) -> Resp {
     match cmd.cmd.as_str() {
         "ping" => Resp::ok(),
         "list_entries" => cmd_list_entries(nvs),
+        "remove_entry" => cmd_remove_entry(cmd, nvs, delete_tx),
         "sync_clock" => cmd_sync_clock(cmd, nvs),
         "factory_reset" => cmd_factory_reset(cmd, nvs),
         "allow_pairing" => {
