@@ -22,6 +22,7 @@ use std::sync::{
 use esp_idf_svc::hal::{delay::BLOCK, uart::UartDriver};
 use serde::{Deserialize, Serialize};
 
+use crate::config_store::lock_nvs;
 pub use crate::config_store::SharedNvs;
 
 // ── Enrollment IPC (CLI task ↔ main loop) ────────────────────────────────────
@@ -222,7 +223,7 @@ fn write_event(uart: &UartDriver<'static>, event: &EnrollEvent) {
 /// Returns true if at least one TOTP entry exists in NVS (used to decide whether
 /// the CLI fingerprint gate is active — a fresh device with no entries is open).
 fn has_any_entries(nvs: &Arc<Mutex<SharedNvs>>) -> bool {
-    let guard = nvs.lock().expect("NVS mutex poisoned");
+    let guard = lock_nvs(nvs);
     let mut buf = [0u8; 65];
     (0u32..10).any(|s| matches!(guard.0.get_str(&format!("slot_{s}"), &mut buf), Ok(Some(_))))
 }
@@ -359,7 +360,7 @@ fn cmd_add_entry(
 
     // Find the first free slot (0–9) and write secret + label to NVS.
     let slot: u32 = {
-        let mut guard = nvs.lock().expect("NVS mutex poisoned");
+        let mut guard = lock_nvs(nvs);
         let mut probe = [0u8; 65];
         let free = (0u32..10).find(|&s| {
             !matches!(
@@ -418,7 +419,7 @@ fn cmd_add_entry(
             }
             Ok(EnrollResp::Failed) | Err(_) => {
                 // Undo NVS writes so the slot is available for a retry.
-                let mut guard = nvs.lock().expect("NVS mutex poisoned");
+                let mut guard = lock_nvs(nvs);
                 let _ = guard.0.remove(&format!("slot_{slot}"));
                 let _ = guard.0.remove(&format!("label_{slot}"));
                 write_resp(uart, &Resp::err("enrollment failed"));
@@ -429,7 +430,7 @@ fn cmd_add_entry(
 }
 
 fn cmd_list_entries(nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
-    let guard = nvs.lock().expect("NVS mutex poisoned");
+    let guard = lock_nvs(nvs);
     let mut entries = Vec::new();
     let mut secret_buf = [0u8; 65];
     let mut label_buf = [0u8; 257];
@@ -460,7 +461,7 @@ fn cmd_remove_entry(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     let Some(label) = cmd.label.as_deref().filter(|s| !s.is_empty()) else {
         return Resp::err("missing field: label");
     };
-    let mut guard = nvs.lock().expect("NVS mutex poisoned");
+    let mut guard = lock_nvs(nvs);
     let mut label_buf = [0u8; 257];
     for slot in 0u32..10 {
         if let Ok(Some(stored)) = guard.0.get_str(&format!("label_{slot}"), &mut label_buf) {
@@ -479,7 +480,7 @@ fn cmd_delete_entry_by_slot(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     let Some(slot) = cmd.slot else {
         return Resp::err("missing field: slot");
     };
-    let mut guard = nvs.lock().expect("NVS mutex poisoned");
+    let mut guard = lock_nvs(nvs);
     let _ = guard.0.remove(&format!("label_{slot}"));
     match guard.0.remove(&format!("slot_{slot}")) {
         Ok(true) => Resp::ok(),
@@ -521,7 +522,7 @@ fn cmd_factory_reset(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
         return Resp::err("send confirm=\"RESET\" to confirm");
     }
     {
-        let mut guard = nvs.lock().expect("NVS mutex poisoned");
+        let mut guard = lock_nvs(nvs);
         for slot in 0u32..10 {
             let _ = guard.0.remove(&format!("slot_{slot}"));
             let _ = guard.0.remove(&format!("label_{slot}"));

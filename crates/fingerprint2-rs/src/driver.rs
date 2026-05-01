@@ -498,13 +498,6 @@ where
         Ok(())
     }
 
-    /// Cancel any running auto enrollment or auto identification.
-    pub fn cancel_auto_flow(&mut self) -> Result<(), FingerprintError<E>> {
-        self.send_command(&[crate::commands::PS_CANCEL_AUTO_FLOW])?;
-        self.read_ack()?;
-        Ok(())
-    }
-
     /// Poll for an unsolicited incoming frame — **non-blocking**.
     ///
     /// - Returns `Ok(DriverEvent::Wakeup)` when the sensor's 12-byte autonomous

@@ -66,18 +66,24 @@ impl<'d> FingerprintSensor<'d> {
         })
     }
 
+    /// Drain pending RX bytes, send `activate`, and wait 100 ms for the sensor's
+    /// UART to settle before sending the next command.
+    ///
+    /// Must be called before any command sequence that follows an idle/sleep
+    /// period, or after the sensor has returned to autonomous wakeup mode.
+    fn reactivate_sensor(&mut self, ctx: &str) {
+        self.driver.drain_rx();
+        if let Err(e) = self.driver.activate() {
+            log::warn!("{ctx}: re-activate error: {:?}", e);
+        }
+        FreeRtos::delay_ms(100);
+    }
+
     /// Initialise the sensor: drain RX → activate → handshake.
     pub fn init(&mut self) -> bool {
-        self.driver.drain_rx();
-        log::info!("Fingerprint: activating...");
-        match self.driver.activate() {
-            Ok(()) => log::info!("Fingerprint: activate OK"),
-            Err(e) => log::warn!("Fingerprint: activate = {:?} (continuing)", e),
-        }
-
-        // Ensure we start in Active Mode (1) and LEDs are enabled
+        self.reactivate_sensor("init");
+        // Ensure we start in Active Mode (1) and LEDs are enabled.
         let _ = self.driver.set_work_mode(1);
-
         log::info!("Fingerprint: handshake...");
         match self.driver.handshake() {
             Ok(()) => {
@@ -103,17 +109,7 @@ impl<'d> FingerprintSensor<'d> {
         if !self.ready {
             return false;
         }
-        // The sensor drifts back to autonomous wakeup mode between operations.
-        // Re-activate before enrollment or it immediately rejects the command (0xFE).
-        self.driver.drain_rx();
-        if let Err(e) = self.driver.activate() {
-            log::warn!("begin_enroll: re-activate error: {:?}", e);
-        }
-
-        // Give the sensor's UART time to recover before sending the next command.
-        // Without this, the sensor often drops bytes of the auto-enroll command
-        // and returns SensorError(1) "Error when receiving data package".
-        FreeRtos::delay_ms(100);
+        self.reactivate_sensor("begin_enroll");
 
         log::info!("begin_enroll slot={} count={}", slot, count);
         self.driver
@@ -175,11 +171,7 @@ impl<'d> FingerprintSensor<'d> {
         if !self.ready {
             return false;
         }
-        self.driver.drain_rx();
-        if let Err(e) = self.driver.activate() {
-            log::warn!("empty_template_library: re-activate error: {:?}", e);
-        }
-        FreeRtos::delay_ms(100);
+        self.reactivate_sensor("empty_template_library");
         match self.driver.empty_template_library() {
             Ok(()) => {
                 log::info!("Fingerprint: template library cleared");
@@ -233,7 +225,8 @@ impl<'d> FingerprintSensor<'d> {
         // Restore default idle LED (Blue breathing).
         let _ = self.driver.set_led(LedMode::Breathing, LedColor::Blue, 0);
 
-        self.smart_poll_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+        self.smart_poll_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
     }
 
     fn execute_auto_identify(&mut self, via: &str) -> Option<IdentifyResult> {

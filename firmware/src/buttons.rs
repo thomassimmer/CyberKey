@@ -12,6 +12,7 @@ pub const POLL_MS: u32 = 20;
 const LONG_PRESS_POLLS: u32 = 150;
 
 #[allow(clippy::enum_variant_names)]
+#[derive(Copy, Clone)]
 pub enum ButtonEvent {
     ALongPress,
     AShortPress,
@@ -21,16 +22,54 @@ pub enum ButtonEvent {
     CPowerLongPress,
 }
 
+/// Internal state machine for a single button's hold / long-press logic.
+struct ButtonState {
+    hold: u32,
+    long_fired: bool,
+}
+
+impl ButtonState {
+    const fn new() -> Self {
+        Self {
+            hold: 0,
+            long_fired: false,
+        }
+    }
+
+    /// Advance the state machine for one poll tick.
+    ///
+    /// `long_event` fires after [`LONG_PRESS_POLLS`] consecutive down ticks.
+    /// `short_event` fires on release when no long event was emitted; pass
+    /// `None` for buttons that have no short-press action (e.g. button C).
+    fn poll(
+        &mut self,
+        is_down: bool,
+        long_event: ButtonEvent,
+        short_event: Option<ButtonEvent>,
+    ) -> Option<ButtonEvent> {
+        if is_down {
+            self.hold += 1;
+            if !self.long_fired && self.hold >= LONG_PRESS_POLLS {
+                self.long_fired = true;
+                return Some(long_event);
+            }
+        } else if self.hold > 0 {
+            let fired = if !self.long_fired { short_event } else { None };
+            self.hold = 0;
+            self.long_fired = false;
+            return fired;
+        }
+        None
+    }
+}
+
 pub struct Buttons<'d, A: InputPin, B: InputPin, C: InputPin> {
     btn_a: PinDriver<'d, A, Input>,
     btn_b: PinDriver<'d, B, Input>,
     btn_c: PinDriver<'d, C, Input>,
-    a_hold: u32,
-    a_long_fired: bool,
-    b_hold: u32,
-    b_long_fired: bool,
-    c_hold: u32,
-    c_long_fired: bool,
+    state_a: ButtonState,
+    state_b: ButtonState,
+    state_c: ButtonState,
 }
 
 impl<'d, A: InputPin, B: InputPin, C: InputPin> Buttons<'d, A, B, C> {
@@ -43,12 +82,9 @@ impl<'d, A: InputPin, B: InputPin, C: InputPin> Buttons<'d, A, B, C> {
             btn_a,
             btn_b,
             btn_c,
-            a_hold: 0,
-            a_long_fired: false,
-            b_hold: 0,
-            b_long_fired: false,
-            c_hold: 0,
-            c_long_fired: false,
+            state_a: ButtonState::new(),
+            state_b: ButtonState::new(),
+            state_c: ButtonState::new(),
         }
     }
 
@@ -68,58 +104,22 @@ impl<'d, A: InputPin, B: InputPin, C: InputPin> Buttons<'d, A, B, C> {
         let b_down = self.btn_b.is_low();
         let c_down = self.btn_c.is_low();
 
-        // --- Button A ---
-        if a_down {
-            self.a_hold += 1;
-            if !self.a_long_fired && self.a_hold >= LONG_PRESS_POLLS {
-                self.a_long_fired = true;
-                return Some(ButtonEvent::ALongPress);
-            }
-        } else if self.a_hold > 0 {
-            let fired = if !self.a_long_fired {
-                Some(ButtonEvent::AShortPress)
-            } else {
-                None
-            };
-            self.a_hold = 0;
-            self.a_long_fired = false;
-            if fired.is_some() {
-                return fired;
-            }
+        if let Some(e) = self.state_a.poll(
+            a_down,
+            ButtonEvent::ALongPress,
+            Some(ButtonEvent::AShortPress),
+        ) {
+            return Some(e);
         }
-
-        // --- Button B ---
-        if b_down {
-            self.b_hold += 1;
-            if !self.b_long_fired && self.b_hold >= LONG_PRESS_POLLS {
-                self.b_long_fired = true;
-                return Some(ButtonEvent::BLongPress);
-            }
-        } else if self.b_hold > 0 {
-            let fired = if !self.b_long_fired {
-                Some(ButtonEvent::BShortPress)
-            } else {
-                None
-            };
-            self.b_hold = 0;
-            self.b_long_fired = false;
-            if fired.is_some() {
-                return fired;
-            }
+        if let Some(e) = self.state_b.poll(
+            b_down,
+            ButtonEvent::BLongPress,
+            Some(ButtonEvent::BShortPress),
+        ) {
+            return Some(e);
         }
-
-        // --- Button C (power) ---
-        if c_down {
-            self.c_hold += 1;
-            if !self.c_long_fired && self.c_hold >= LONG_PRESS_POLLS {
-                self.c_long_fired = true;
-                return Some(ButtonEvent::CPowerLongPress);
-            }
-        } else {
-            self.c_hold = 0;
-            self.c_long_fired = false;
-        }
-
-        None
+        // Button C has no short-press action (power button).
+        self.state_c
+            .poll(c_down, ButtonEvent::CPowerLongPress, None)
     }
 }

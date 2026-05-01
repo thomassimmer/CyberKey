@@ -61,7 +61,7 @@ fn check_boot_factory_reset<D, A, B, C>(
         fp.empty_template_library();
         log::info!("Factory reset: fingerprint templates cleared");
         {
-            let mut guard = nvs.lock().expect("NVS mutex poisoned");
+            let mut guard = config_store::lock_nvs(nvs);
             for slot in 0u32..10 {
                 let _ = guard.0.remove(&format!("slot_{slot}"));
                 let _ = guard.0.remove(&format!("label_{slot}"));
@@ -72,6 +72,59 @@ fn check_boot_factory_reset<D, A, B, C>(
         FreeRtos::delay_ms(2000);
         unsafe { esp_idf_svc::sys::esp_restart() }
     }
+}
+
+/// Wake the screen if it is off, resetting the inactivity counter.
+///
+/// Centralises the repeated "ensure screen is on" pattern used throughout the
+/// main event loop (button press, BLE event, fingerprint result, CLI request…).
+fn wake_screen_if_off<BL: OutputPin>(
+    screen_on: &mut bool,
+    inactivity_ticks: &mut u32,
+    backlight: &mut PinDriver<'_, BL, Output>,
+    fp: &mut fingerprint::FingerprintSensor<'_>,
+) {
+    *inactivity_ticks = 0;
+    if !*screen_on {
+        backlight.set_high().ok();
+        *screen_on = true;
+        fp.wake();
+    }
+}
+
+/// Restore the main idle screen after any action that temporarily takes over the display.
+///
+/// Shows the active-clients count, the pairing PIN, or the "Press B to pair" prompt
+/// depending on the current BLE state — the three branches are the same everywhere
+/// in the main loop so this helper eliminates 5× copies of the same code.
+fn restore_idle_screen<D>(
+    disp: &mut D,
+    sb: &display::StatusBar<'_>,
+    connected: u32,
+    pairing_open: bool,
+    passkey: u32,
+) where
+    D: embedded_graphics::draw_target::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
+{
+    if connected > 0 {
+        display::show_status(disp, sb, &format!("ACTIVE CLIENTS: {}", connected));
+    } else if pairing_open {
+        display::show_pin(disp, sb, passkey, connected);
+    } else {
+        display::show_status(disp, sb, "Press B to pair");
+    }
+}
+
+/// Generate a fresh random passkey, open a 60-second pairing window, and
+/// set `pairing_open` + `pairing_auto_close_at` accordingly.
+///
+/// Returns the new passkey so the caller can pass it to `show_pin`.
+fn open_fresh_pairing_window(pairing_open: &mut bool, pairing_auto_close_at: &mut u64) -> u32 {
+    let passkey = unsafe { esp_idf_svc::sys::esp_random() } % 1_000_000;
+    ble_hid::open_pairing_window(passkey);
+    *pairing_open = true;
+    *pairing_auto_close_at = unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64 + 60;
+    passkey
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -173,12 +226,12 @@ where
                 if ble_hid::PAIRING_ALLOWED.load(Ordering::Relaxed) {
                     display::show_pin(disp, &sb, passkey, connected);
                 } else if connected > 0 {
-                    display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
+                    display::show_status(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
                 } else {
                     display::show_status(disp, &sb, "Press B to pair");
                 }
             } else if connected > 0 {
-                display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
+                display::show_status(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
             } else {
                 display::show_status(disp, &sb, "Press B to pair");
             }
@@ -194,35 +247,21 @@ where
                 if connected == 0 {
                     display::show_status(disp, &sb, "Press B to pair");
                 } else {
-                    display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
+                    display::show_status(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
                 }
             }
         }
 
         // CLI allow_pairing: generate a fresh passkey and open a 60-second window.
         if ble_hid::OPEN_PAIRING_REQUESTED.swap(false, Ordering::Relaxed) {
-            passkey = unsafe { esp_idf_svc::sys::esp_random() } % 1_000_000;
-            ble_hid::open_pairing_window(passkey);
-            pairing_open = true;
-            pairing_auto_close_at =
-                unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64 + 60;
-            inactivity_ticks = 0;
-            if !screen_on {
-                backlight.set_high().ok();
-                screen_on = true;
-                fp.wake();
-            }
+            passkey = open_fresh_pairing_window(&mut pairing_open, &mut pairing_auto_close_at);
+            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
             display::show_pin(disp, &sb, passkey, connected);
         }
 
         let btn_event = buttons.poll();
         if btn_event.is_some() || (!screen_on && buttons.is_any_down()) {
-            inactivity_ticks = 0;
-            if !screen_on {
-                backlight.set_high().ok();
-                screen_on = true;
-                fp.wake();
-            }
+            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
         }
         match btn_event {
             Some(ButtonEvent::ALongPress) => {
@@ -238,17 +277,7 @@ where
             Some(ButtonEvent::AShortPress) => {
                 if pending_bond_clear {
                     pending_bond_clear = false;
-                    if connected > 0 {
-                        display::show_status_mini(
-                            disp,
-                            &sb,
-                            &format!("ACTIVE CLIENTS: {}", connected),
-                        );
-                    } else if pairing_open {
-                        display::show_pin(disp, &sb, passkey, connected);
-                    } else {
-                        display::show_status(disp, &sb, "Press B to pair");
-                    }
+                    restore_idle_screen(disp, &sb, connected, pairing_open, passkey);
                 }
             }
             Some(ButtonEvent::BLongPress) => {
@@ -261,21 +290,10 @@ where
                     ble_hid::close_pairing_window();
                     pairing_open = false;
                     pairing_auto_close_at = 0;
-                    if connected > 0 {
-                        display::show_status_mini(
-                            disp,
-                            &sb,
-                            &format!("ACTIVE CLIENTS: {}", connected),
-                        );
-                    } else {
-                        display::show_status(disp, &sb, "Press B to pair");
-                    }
+                    restore_idle_screen(disp, &sb, connected, pairing_open, passkey);
                 } else {
-                    passkey = unsafe { esp_idf_svc::sys::esp_random() } % 1_000_000;
-                    ble_hid::open_pairing_window(passkey);
-                    pairing_open = true;
-                    pairing_auto_close_at =
-                        unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64 + 60;
+                    passkey =
+                        open_fresh_pairing_window(&mut pairing_open, &mut pairing_auto_close_at);
                     display::show_pin(disp, &sb, passkey, connected);
                 }
             }
@@ -312,12 +330,7 @@ where
 
         // CLI-driven enrollment: pick up a pending EnrollRequest from the CLI task.
         if let Ok(request) = enroll_rx.try_recv() {
-            inactivity_ticks = 0;
-            if !screen_on {
-                backlight.set_high().ok();
-                screen_on = true;
-                fp.wake();
-            }
+            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
             const PASSES: u8 = 3;
             display::show_status_2line(disp, &sb, "CLI Enroll", "Place finger");
             if fp.begin_enroll(request.slot, PASSES) {
@@ -377,23 +390,12 @@ where
             }
             fp.reactivate();
             FreeRtos::delay_ms(2000);
-            if connected > 0 {
-                display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
-            } else if pairing_open {
-                display::show_pin(disp, &sb, passkey, connected);
-            } else {
-                display::show_status(disp, &sb, "Press B to pair");
-            }
+            restore_idle_screen(disp, &sb, connected, pairing_open, passkey);
         }
 
         // CLI-driven fingerprint verify: pick up a pending VerifyRequest from the CLI task.
         if let Ok(request) = verify_rx.try_recv() {
-            inactivity_ticks = 0;
-            if !screen_on {
-                backlight.set_high().ok();
-                screen_on = true;
-                fp.wake();
-            }
+            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
             display::show_status_2line(disp, &sb, "CLI Auth", "Place finger");
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             let matched = loop {
@@ -413,30 +415,19 @@ where
                 display::show_status(disp, &sb, "Auth Failed");
             }
             FreeRtos::delay_ms(1500);
-            if connected > 0 {
-                display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
-            } else if pairing_open {
-                display::show_pin(disp, &sb, passkey, connected);
-            } else {
-                display::show_status(disp, &sb, "Press B to pair");
-            }
+            restore_idle_screen(disp, &sb, connected, pairing_open, passkey);
         }
 
         // Fingerprint — non-blocking poll; blocks ~20 ms only when a finger is detected.
         match fp.poll() {
             Some(fingerprint::IdentifyResult::Match(id)) => {
-                inactivity_ticks = 0;
-                if !screen_on {
-                    backlight.set_high().ok();
-                    screen_on = true;
-                    fp.wake();
-                }
+                wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
                 display::show_auth_ok(disp, &sb, id);
 
                 let key = format!("slot_{}", id);
                 let mut buf = [0u8; 65];
                 let totp_result = {
-                    let guard = nvs.lock().expect("NVS mutex poisoned");
+                    let guard = config_store::lock_nvs(&nvs);
                     match guard.0.get_str(&key, &mut buf) {
                         Ok(Some(secret)) => {
                             let now =
@@ -472,30 +463,13 @@ where
                 }
 
                 FreeRtos::delay_ms(2000);
-                if connected > 0 {
-                    display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
-                } else if pairing_open {
-                    display::show_pin(disp, &sb, passkey, connected);
-                } else {
-                    display::show_status(disp, &sb, "Press B to pair");
-                }
+                restore_idle_screen(disp, &sb, connected, pairing_open, passkey);
             }
             Some(fingerprint::IdentifyResult::NoMatch) => {
-                inactivity_ticks = 0;
-                if !screen_on {
-                    backlight.set_high().ok();
-                    screen_on = true;
-                    fp.wake();
-                }
+                wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
                 display::show_no_match(disp, &sb);
                 FreeRtos::delay_ms(2000);
-                if connected > 0 {
-                    display::show_status_mini(disp, &sb, &format!("ACTIVE CLIENTS: {}", connected));
-                } else if pairing_open {
-                    display::show_pin(disp, &sb, passkey, connected);
-                } else {
-                    display::show_status(disp, &sb, "Press B to pair");
-                }
+                restore_idle_screen(disp, &sb, connected, pairing_open, passkey);
             }
             None => {}
         }

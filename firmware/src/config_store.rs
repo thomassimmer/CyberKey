@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use esp_idf_svc::nvs::{EspNvs, EspNvsPartition, NvsEncrypted};
 
@@ -25,4 +25,13 @@ pub fn init() -> anyhow::Result<Arc<Mutex<SharedNvs>>> {
     };
     let nvs_inner = EspNvs::new(nvs_partition, "ck", true)?;
     Ok(Arc::new(Mutex::new(SharedNvs(nvs_inner))))
+}
+
+/// Acquire the NVS mutex, panicking with a clear message if the lock is poisoned.
+///
+/// Centralises the repeated `nvs.lock().expect("NVS mutex poisoned")` pattern
+/// and keeps the panic string in a single place in the binary's `.rodata`.
+#[inline]
+pub fn lock_nvs(nvs: &Arc<Mutex<SharedNvs>>) -> MutexGuard<'_, SharedNvs> {
+    nvs.lock().expect("NVS mutex poisoned")
 }

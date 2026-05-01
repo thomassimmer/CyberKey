@@ -41,7 +41,6 @@ mod config_store;
 mod display;
 mod fingerprint;
 mod fonts;
-mod hid;
 mod rtc;
 
 fn main() -> anyhow::Result<()> {

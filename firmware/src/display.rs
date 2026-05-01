@@ -78,12 +78,6 @@ fn draw_center<D: DrawTarget<Color = Rgb565>>(d: &mut D, text: &str, y: i32, col
     let _ = draw_text_prop(d, text, Point::new(x, y), color);
 }
 
-fn draw_right<D: DrawTarget<Color = Rgb565>>(d: &mut D, text: &str, y: i32, color: Rgb565) {
-    let w = get_text_width(text);
-    let x = W as i32 - w - 5;
-    let _ = draw_text_prop(d, text, Point::new(x, y), color);
-}
-
 fn draw_large_center<D: DrawTarget<Color = Rgb565>>(d: &mut D, text: &str, y: i32, color: Rgb565) {
     let w = get_large_width(text);
     let x = (W as i32 - w) / 2;
@@ -162,13 +156,6 @@ pub fn show_pin<D: DrawTarget<Color = Rgb565>>(
 
 /// Single-line status message centred in content area.
 pub fn show_status<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, msg: &str) {
-    clear_content(d);
-    update_topbar(d, sb);
-    draw_mini_center(d, &msg.to_uppercase(), CONTENT_CY - 10, NEON_CYAN);
-}
-
-/// Single-line status message using the mini font.
-pub fn show_status_mini<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, msg: &str) {
     clear_content(d);
     update_topbar(d, sb);
     draw_mini_center(d, &msg.to_uppercase(), CONTENT_CY - 10, NEON_CYAN);

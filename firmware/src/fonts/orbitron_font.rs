@@ -1,6 +1,7 @@
 // GÉNERÉ AUTOMATIQUEMENT PAR gen_prop_font.py
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
 
+#[allow(dead_code)]
 pub const FONT_HEIGHT: i32 = 21;
 pub const BASELINE: i32 = 17;
 
@@ -200,7 +201,7 @@ where
 
     for c in text.chars() {
         let code = c as u32;
-        if code < 32 || code > 126 {
+        if !(32..=126).contains(&code) {
             continue;
         }
 
@@ -210,7 +211,7 @@ where
             continue;
         }
 
-        let bytes_per_row = (w as usize + 7) / 8;
+        let bytes_per_row = (w as usize).div_ceil(8);
         let glyph_data =
             &FONT_DATA[offset as usize..(offset as usize + bytes_per_row * h as usize)];
 
@@ -233,7 +234,7 @@ where
                 }
             }
         }
-        cursor.x += (w as i32 + x as i32 + 1); // +1 pour l'espacement entre lettres
+        cursor.x += w as i32 + x as i32 + 1; // +1 pour l'espacement entre lettres
     }
     Ok(cursor)
 }
@@ -242,14 +243,14 @@ pub fn get_text_width(text: &str) -> i32 {
     let mut width = 0;
     for c in text.chars() {
         let code = c as u32;
-        if code < 32 || code > 126 {
+        if !(32..=126).contains(&code) {
             continue;
         }
         let (_, w, _, x, _) = GLYPH_INFO[(code - 32) as usize];
         if w == 0 {
             width += 5;
         } else {
-            width += (w as i32 + x as i32 + 1);
+            width += w as i32 + x as i32 + 1;
         }
     }
     if width > 0 {

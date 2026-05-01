@@ -4,7 +4,7 @@
 //!   - `CONNECTED`   : AtomicBool  (true when CCCD subscribed, keystrokes can be sent)
 //!   - `CLEAR_BONDS` : AtomicBool  (set by UI to request bond wipe + reboot)
 //!   - `init(passkey)` → `BleHid`  (call once from main before the main loop)
-//!   - `BleHid::type_string(text)`  (send keystrokes)
+//!   - `BleHid::type_digits(text)`  (send numpad digit keystrokes)
 //!   - `clear_bonds_and_reboot()`   (wipe NVS bonds, then esp_restart)
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -15,8 +15,6 @@ use esp32_nimble::{
     BLEAdvertisementData, BLECharacteristic, BLEDevice, BLEHIDDevice, NimbleSub,
 };
 use esp_idf_svc::hal::delay::FreeRtos;
-
-use crate::hid::ascii_to_key;
 
 // ---------------------------------------------------------------------------
 // HID Report Descriptor (minimal boot keyboard — 45 bytes)
@@ -70,35 +68,10 @@ pub struct BleHid {
 }
 
 impl BleHid {
-    /// Type every printable ASCII character in `text` as key-down / key-up pairs.
-    ///
-    /// No-op if the host has not yet subscribed to HID notifications.
-    pub fn type_string(&self, text: &str) {
-        if SUBSCRIBED.load(Ordering::Relaxed) == 0 {
-            log::warn!("[HID] no active subscriptions — dropping '{}'", text);
-            return;
-        }
-        for byte in text.bytes() {
-            let (modifier, keycode) = ascii_to_key(byte);
-            if keycode == 0 {
-                log::debug!("[HID] skipping unmapped char 0x{:02x}", byte);
-                continue;
-            }
-            self.input
-                .lock()
-                .set_value(&[modifier, 0x00, keycode, 0, 0, 0, 0, 0])
-                .notify();
-            FreeRtos::delay_ms(10); // hold key down
-            self.input.lock().set_value(&[0u8; 8]).notify(); // key up
-            FreeRtos::delay_ms(5);
-        }
-        log::info!("[HID] '{}' sent", text);
-    }
-
     /// Type a string of digits using numpad keycodes (layout-independent).
     ///
     /// Regular digit keycodes (0x1e–0x27) are physical-position-based and produce
-    /// wrong characters on non-QWERTY layouts (e.g. AZERTY gives "àéèç...").
+    /// wrong characters on non-QWERTY layouts (e.g. AZERTY gives "àéèç…").
     /// Numpad keycodes (0x59–0x62) are always interpreted as digits by the host OS.
     pub fn type_digits(&self, digits: &str) {
         if SUBSCRIBED.load(Ordering::Relaxed) == 0 {

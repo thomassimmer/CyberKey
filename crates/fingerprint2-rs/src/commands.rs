@@ -39,6 +39,8 @@ pub const PS_SET_WORK_MODE: u8 = 0xD2;
 pub const PS_SET_SLEEP_TIME: u8 = 0xD0;
 /// Control the RGB LED ring.
 pub const PS_CONTROL_BLN: u8 = 0x3C;
+/// Activate the sensor (required after cold boot on some firmware versions).
+pub const PS_ACTIVATE: u8 = 0xD4;
 
 // ---------------------------------------------------------------------------
 // LedMode
