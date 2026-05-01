@@ -8,8 +8,8 @@ use esp_idf_svc::hal::gpio::{Input, InputPin, PinDriver};
 /// Main-loop poll interval in milliseconds.
 pub const POLL_MS: u32 = 20;
 
-/// Long-press threshold: 150 polls × POLL_MS = 3 seconds.
-const LONG_PRESS_POLLS: u32 = 150;
+/// Long-press threshold in milliseconds.
+pub const LONG_PRESS_MS: u32 = 1500;
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Copy, Clone)]
@@ -18,29 +18,25 @@ pub enum ButtonEvent {
     AShortPress,
     BLongPress,
     BShortPress,
-    /// Button C (power) held ≥ 3 s → power off.
+    /// Button C (power) held ≥ 1.5 s → power off.
     CPowerLongPress,
 }
 
 /// Internal state machine for a single button's hold / long-press logic.
 struct ButtonState {
-    hold: u32,
+    down_since: Option<std::time::Instant>,
     long_fired: bool,
 }
 
 impl ButtonState {
     const fn new() -> Self {
         Self {
-            hold: 0,
+            down_since: None,
             long_fired: false,
         }
     }
 
     /// Advance the state machine for one poll tick.
-    ///
-    /// `long_event` fires after [`LONG_PRESS_POLLS`] consecutive down ticks.
-    /// `short_event` fires on release when no long event was emitted; pass
-    /// `None` for buttons that have no short-press action (e.g. button C).
     fn poll(
         &mut self,
         is_down: bool,
@@ -48,14 +44,13 @@ impl ButtonState {
         short_event: Option<ButtonEvent>,
     ) -> Option<ButtonEvent> {
         if is_down {
-            self.hold += 1;
-            if !self.long_fired && self.hold >= LONG_PRESS_POLLS {
+            let start = self.down_since.get_or_insert_with(std::time::Instant::now);
+            if !self.long_fired && start.elapsed().as_millis() >= LONG_PRESS_MS as u128 {
                 self.long_fired = true;
                 return Some(long_event);
             }
-        } else if self.hold > 0 {
+        } else if let Some(_start) = self.down_since.take() {
             let fired = if !self.long_fired { short_event } else { None };
-            self.hold = 0;
             self.long_fired = false;
             return fired;
         }

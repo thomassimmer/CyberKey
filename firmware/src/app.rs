@@ -298,8 +298,9 @@ where
                 }
             }
             Some(ButtonEvent::CPowerLongPress) => {
-                display::show_status(disp, &sb, "Powering off...");
-                FreeRtos::delay_ms(500);
+                log::warn!("Powering off sequence initiated...");
+                display::show_power_off(disp, &sb);
+                FreeRtos::delay_ms(1500);
                 power_pin.set_low()?;
                 loop {
                     FreeRtos::delay_ms(100);

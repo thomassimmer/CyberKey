@@ -161,6 +161,13 @@ pub fn show_status<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>,
     draw_mini_center(d, &msg.to_uppercase(), CONTENT_CY - 10, NEON_CYAN);
 }
 
+/// Power-off screen (large text).
+pub fn show_power_off<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>) {
+    clear_content(d);
+    update_topbar(d, sb);
+    draw_mini_center(d, "POWERING OFF...", CONTENT_CY - 10, NEON_RED);
+}
+
 /// Two-line status message centred in content area.
 pub fn show_status_2line<D: DrawTarget<Color = Rgb565>>(
     d: &mut D,

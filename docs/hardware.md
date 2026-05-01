@@ -59,7 +59,7 @@ See [fingerprint2-rs driver docs](../crates/fingerprint2-rs/src/driver.rs) for t
 
 ## Button Polling (not interrupts)
 
-Buttons are polled every 20 ms from the main loop. A counter tracks how many consecutive polls a button has been held — 150 polls (3 seconds) triggers a long-press event.
+Buttons are polled every 20 ms from the main loop. A timer tracks how long a button has been held — 1.5 seconds triggers a long-press event.
 
 **Why polling and not GPIO interrupts?**
 
