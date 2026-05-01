@@ -119,7 +119,18 @@ Deletes the NVS entry for slot N and then removes the fingerprint template from 
 ← {"ok":true}
 ```
 
-The `confirm` field must be exactly `"RESET"` (case-sensitive). Erases all NVS entries and all fingerprint templates. The device reboots in an unconfigured state.
+The `confirm` field must be exactly `"RESET"` (case-sensitive).
+
+The firmware responds `{"ok":true}` immediately, then the main loop picks up the request and performs the full wipe before rebooting. Data cleared:
+
+- All TOTP slots (`slot_0`–`slot_9`) and their labels (`label_0`–`label_9`) from NVS
+- Timezone offset (`tz_offset`) from NVS
+- All fingerprint templates from the sensor's internal flash
+- All BLE bond data (LTK, IRK, CCCD) from NimBLE's NVS namespace
+
+The device reboots in an unconfigured state. The BLE pairing window opens automatically on first boot after reset.
+
+**What is not cleared**: the BM8563 RTC hardware timestamp. It persists as long as the device has power. Re-run `sync_clock` after reset if the displayed time matters.
 
 ### `allow_pairing`
 

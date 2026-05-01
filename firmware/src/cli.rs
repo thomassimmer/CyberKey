@@ -517,20 +517,11 @@ fn cmd_sync_clock(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     Resp::ok()
 }
 
-fn cmd_factory_reset(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
+fn cmd_factory_reset(cmd: &Cmd, _nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     if cmd.confirm.as_deref() != Some("RESET") {
         return Resp::err("send confirm=\"RESET\" to confirm");
     }
-    {
-        let mut guard = lock_nvs(nvs);
-        for slot in 0u32..10 {
-            let _ = guard.0.remove(&format!("slot_{slot}"));
-            let _ = guard.0.remove(&format!("label_{slot}"));
-        }
-    }
-    log::warn!(
-        "CLI: factory reset — NVS erased, signalling main loop to clear fingerprints and reboot"
-    );
+    log::warn!("CLI: factory reset requested — signalling main loop");
     FACTORY_RESET.store(true, Ordering::Relaxed);
     Resp::ok()
 }

@@ -14,6 +14,38 @@ use crate::{
     cli, config_store, display, fingerprint, rtc,
 };
 
+/// Erase all user data and reboot.
+///
+/// Clears: fingerprint templates, TOTP slots + labels, timezone offset, BLE bonds.
+fn do_factory_reset<D>(
+    trigger: &str,
+    disp: &mut D,
+    sb: &display::StatusBar<'_>,
+    fp: &mut fingerprint::FingerprintSensor<'_>,
+    nvs: &Arc<Mutex<config_store::SharedNvs>>,
+) -> !
+where
+    D: embedded_graphics::draw_target::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
+{
+    log::warn!("Factory reset: triggered via {trigger}");
+    display::show_status(disp, sb, "Resetting...");
+    fp.empty_template_library();
+    log::info!("Factory reset: fingerprint templates cleared");
+    {
+        let mut guard = config_store::lock_nvs(nvs);
+        for slot in 0u32..10 {
+            let _ = guard.0.remove(&format!("slot_{slot}"));
+            let _ = guard.0.remove(&format!("label_{slot}"));
+        }
+        let _ = guard.0.remove("tz_offset");
+    }
+    ble_hid::clear_bonds();
+    log::warn!("Factory reset: complete — rebooting");
+    display::show_reset_ok(disp, sb);
+    FreeRtos::delay_ms(2000);
+    unsafe { esp_idf_svc::sys::esp_restart() }
+}
+
 /// Boot-time check: if Button A is held for 2 s, prompt for a second press to confirm,
 /// then erase all fingerprint templates and NVS slots before rebooting.
 fn check_boot_factory_reset<D, A, B, C>(
@@ -62,21 +94,7 @@ fn check_boot_factory_reset<D, A, B, C>(
     }
 
     if confirmed {
-        log::warn!("Factory reset: triggered via physical button (Button A hold at boot)");
-        display::show_status(disp, sb, "Resetting...");
-        fp.empty_template_library();
-        log::info!("Factory reset: fingerprint templates cleared");
-        {
-            let mut guard = config_store::lock_nvs(nvs);
-            for slot in 0u32..10 {
-                let _ = guard.0.remove(&format!("slot_{slot}"));
-                let _ = guard.0.remove(&format!("label_{slot}"));
-            }
-        }
-        log::warn!("Factory reset: complete — rebooting");
-        display::show_reset_ok(disp, sb);
-        FreeRtos::delay_ms(2000);
-        unsafe { esp_idf_svc::sys::esp_restart() }
+        do_factory_reset("physical button (Button A hold at boot)", disp, sb, fp, nvs);
     }
 }
 
@@ -324,17 +342,9 @@ where
             ble_hid::clear_bonds_and_reboot();
         }
 
-        // CLI-driven factory reset: erase fingerprint templates then reboot.
+        // CLI-driven factory reset.
         if cli::FACTORY_RESET.load(Ordering::Relaxed) {
-            log::warn!("Factory reset: triggered via CLI");
-            display::show_status(disp, &sb, "Resetting...");
-            log::info!("Factory reset: clearing fingerprint templates...");
-            fp.empty_template_library();
-            log::info!("Factory reset: fingerprint templates cleared");
-            log::warn!("Factory reset: complete — rebooting");
-            display::show_reset_ok(disp, &sb);
-            FreeRtos::delay_ms(2000);
-            unsafe { esp_idf_svc::sys::esp_restart() }
+            do_factory_reset("CLI", disp, &sb, fp, &nvs);
         }
 
         // CLI-driven enrollment: pick up a pending EnrollRequest from the CLI task.

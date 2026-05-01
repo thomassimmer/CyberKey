@@ -215,13 +215,18 @@ pub fn init(passkey: u32) -> BleHid {
 // Bond clearing
 // ---------------------------------------------------------------------------
 
+/// Delete all NimBLE bond data without rebooting.
+pub fn clear_bonds() {
+    log::info!("[BLE] clearing all bonds");
+    let device = BLEDevice::take();
+    let _ = device.delete_all_bonds();
+}
+
 /// Delete all NimBLE bond data and reboot the device.
 ///
 /// After reboot the device will advertise openly and require re-pairing.
 pub fn clear_bonds_and_reboot() -> ! {
-    log::info!("[BLE] clearing all bonds — rebooting");
-    let device = BLEDevice::take();
-    let _ = device.delete_all_bonds();
+    clear_bonds();
     unsafe { esp_idf_svc::sys::esp_restart() }
 }
 

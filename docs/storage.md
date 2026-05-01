@@ -42,14 +42,16 @@ The fallback branch (erase + reinit) handles the case where the partition was pr
 
 All keys are in the `"ck"` namespace:
 
-| Key | Type | Example value | Description |
-|-----|------|---------------|-------------|
-| `slot_0` | str | `JBSWY3DPEHPK3PXP` | TOTP base32 secret for slot 0 |
-| `label_0` | str | `GitHub` | Human-readable label for slot 0 |
-| `slot_1` | str | `AAAAAAAAAAAA` | Secret for slot 1 |
-| `label_1` | str | `AWS` | Label for slot 1 |
-| ... | | | Slots 0–9 (max 10 entries) |
-| `tz_offset` | i32 | `7200` | UTC offset in seconds (e.g., 7200 = UTC+2) |
+| Key | Type | Example value | Description | Cleared on reset |
+|-----|------|---------------|-------------|-----------------|
+| `slot_0` | str | `JBSWY3DPEHPK3PXP` | TOTP base32 secret for slot 0 | yes |
+| `label_0` | str | `GitHub` | Human-readable label for slot 0 | yes |
+| `slot_1` | str | `AAAAAAAAAAAA` | Secret for slot 1 | yes |
+| `label_1` | str | `AWS` | Label for slot 1 | yes |
+| ... | | | Slots 0–9 (max 10 entries) | yes |
+| `tz_offset` | i32 | `7200` | UTC offset in seconds (e.g., 7200 = UTC+2) | yes |
+
+NimBLE also stores bond data (LTK, IRK, CCCD) in its own NVS namespace. That namespace is separate from `"ck"` but is also cleared on factory reset via `BLEDevice::delete_all_bonds()`.
 
 There is no index or count stored — the firmware scans for `slot_0` through `slot_9` on startup and builds the in-memory `CyberKeyConfig` from what exists.
 
@@ -90,3 +92,28 @@ The UTC offset is stored separately in NVS (not in the RTC, which only stores UT
 - The display shows local time by adding `tz_offset` to the UTC timestamp for display only.
 
 This means the device shows the correct local time even without a CLI session, as long as the timezone was synced at least once.
+
+---
+
+## Factory Reset
+
+A factory reset wipes all user data. It can be triggered two ways:
+
+- **Physical button**: hold Button A for 2 s at boot, then press it again within 10 s to confirm.
+- **CLI**: `{"cmd":"factory_reset","confirm":"RESET"}` (requires an authenticated session).
+
+Both paths call the same `do_factory_reset()` function in `app.rs`, which clears in order:
+
+1. Fingerprint templates — `fp.empty_template_library()` (sensor internal flash)
+2. NVS TOTP data — `slot_0`–`slot_9` and `label_0`–`label_9`
+3. NVS timezone — `tz_offset`
+4. BLE bonds — `BLEDevice::delete_all_bonds()` (NimBLE NVS namespace)
+5. `esp_restart()`
+
+**What survives a factory reset:**
+
+| Data | Where | Notes |
+|------|-------|-------|
+| BM8563 RTC timestamp | Hardware registers | Persists until power loss; run `sync_clock` after reset |
+| Firmware binary | Flash (OTA partition) | Intentional — reset is data-only |
+| NVS encryption key | eFuses | Burned once at first boot, cannot be erased in software |
