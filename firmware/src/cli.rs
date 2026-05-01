@@ -55,6 +55,17 @@ pub static FACTORY_RESET: AtomicBool = AtomicBool::new(false);
 /// Sender half of the enrollment channel (CLI task → main loop).
 pub type EnrollSender = mpsc::SyncSender<EnrollRequest>;
 
+/// Sent from the CLI task to instruct the main loop to delete a fingerprint slot.
+pub struct DeleteRequest {
+    /// Fingerprint sensor slot to delete.
+    pub slot: u16,
+    /// Channel for the main loop to confirm deletion success.
+    pub reply: mpsc::SyncSender<bool>,
+}
+
+/// Sender half of the delete channel (CLI task → main loop).
+pub type DeleteSender = mpsc::SyncSender<DeleteRequest>;
+
 /// Sent from the CLI task to the main loop to verify a fingerprint for CLI unlock.
 pub struct VerifyRequest {
     /// Main loop sends `true` on any registered fingerprint match, `false` on no-match or timeout.
@@ -63,6 +74,14 @@ pub struct VerifyRequest {
 
 /// Sender half of the verify channel (CLI task → main loop).
 pub type VerifySender = mpsc::SyncSender<VerifyRequest>;
+
+/// All inter-task senders bundled into one struct to avoid Xtensa CALL8 stack-arg ABI issues
+/// when passing multiple 8-byte values as function arguments.
+pub struct Senders {
+    pub enroll_tx: EnrollSender,
+    pub verify_tx: VerifySender,
+    pub delete_tx: DeleteSender,
+}
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -75,8 +94,7 @@ struct Cmd {
     label: Option<String>,
     /// Used by: `add_entry`
     secret_b32: Option<String>,
-    /// Used by: `delete_entry` (legacy slot-based removal)
-    slot: Option<u32>,
+
     /// Used by: `sync_clock` (legacy field name — keep for backward compat)
     ts: Option<u64>,
     /// Used by: `sync_clock` (protocol field name sent by cyberkey-cli)
@@ -148,21 +166,20 @@ impl Resp {
 pub fn spawn(
     uart: UartDriver<'static>,
     nvs: Arc<Mutex<SharedNvs>>,
-    enroll_tx: EnrollSender,
-    verify_tx: VerifySender,
+    senders: Senders,
 ) -> anyhow::Result<()> {
     std::thread::Builder::new()
         .stack_size(8192)
-        .spawn(move || run(uart, nvs, enroll_tx, verify_tx))?;
+        .spawn(move || run(uart, nvs, senders))?;
     Ok(())
 }
 
-fn run(
-    uart: UartDriver<'static>,
-    nvs: Arc<Mutex<SharedNvs>>,
-    enroll_tx: EnrollSender,
-    verify_tx: VerifySender,
-) {
+fn run(uart: UartDriver<'static>, nvs: Arc<Mutex<SharedNvs>>, senders: Senders) {
+    let Senders {
+        enroll_tx,
+        verify_tx,
+        delete_tx,
+    } = senders;
     let mut buf: Vec<u8> = Vec::with_capacity(256);
     let mut byte = [0u8; 1];
     let mut unlocked = false;
@@ -188,6 +205,7 @@ fn run(
                         &nvs,
                         &enroll_tx,
                         &verify_tx,
+                        &delete_tx,
                         &mut unlocked,
                         &mut unlock_until,
                     );
@@ -239,6 +257,7 @@ fn handle_command(
     nvs: &Arc<Mutex<SharedNvs>>,
     enroll_tx: &EnrollSender,
     verify_tx: &VerifySender,
+    delete_tx: &DeleteSender,
     unlocked: &mut bool,
     unlock_until: &mut Option<std::time::Instant>,
 ) {
@@ -279,6 +298,9 @@ fn handle_command(
 
     if cmd.cmd == "add_entry" {
         cmd_add_entry(uart, &cmd, nvs, enroll_tx);
+    } else if cmd.cmd == "remove_entry" {
+        let resp = cmd_remove_entry(&cmd, nvs, delete_tx);
+        write_resp(uart, &resp);
     } else {
         let resp = dispatch(&cmd, nvs);
         write_resp(uart, &resp);
@@ -323,8 +345,6 @@ fn dispatch(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     match cmd.cmd.as_str() {
         "ping" => Resp::ok(),
         "list_entries" => cmd_list_entries(nvs),
-        "remove_entry" => cmd_remove_entry(cmd, nvs),
-        "delete_entry" => cmd_delete_entry_by_slot(cmd, nvs),
         "sync_clock" => cmd_sync_clock(cmd, nvs),
         "factory_reset" => cmd_factory_reset(cmd, nvs),
         "allow_pairing" => {
@@ -467,35 +487,45 @@ fn cmd_list_entries(nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
 }
 
 /// `remove_entry` — removes an entry by its service label (case-sensitive).
-fn cmd_remove_entry(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
+fn cmd_remove_entry(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>, delete_tx: &DeleteSender) -> Resp {
     let Some(label) = cmd.label.as_deref().filter(|s| !s.is_empty()) else {
         return Resp::err("missing field: label");
     };
-    let mut guard = lock_nvs(nvs);
-    let mut label_buf = [0u8; 257];
-    for slot in 0u32..10 {
-        if let Ok(Some(stored)) = guard.0.get_str(&format!("label_{slot}"), &mut label_buf) {
-            if stored == label {
-                let _ = guard.0.remove(&format!("label_{slot}"));
-                let _ = guard.0.remove(&format!("slot_{slot}"));
-                return Resp::ok();
-            }
-        }
-    }
-    Resp::err(format!("entry '{label}' not found"))
-}
 
-/// `delete_entry` — legacy slot-based removal kept for backward compatibility.
-fn cmd_delete_entry_by_slot(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
-    let Some(slot) = cmd.slot else {
-        return Resp::err("missing field: slot");
+    let slot = {
+        let guard = lock_nvs(nvs);
+        let mut label_buf = [0u8; 257];
+        let found = (0u32..10).find(|&slot| {
+            matches!(
+                guard.0.get_str(&format!("label_{slot}"), &mut label_buf),
+                Ok(Some(s)) if s == label
+            )
+        });
+        match found {
+            Some(slot) => slot,
+            None => return Resp::err(format!("entry '{label}' not found")),
+        }
     };
-    let mut guard = lock_nvs(nvs);
-    let _ = guard.0.remove(&format!("label_{slot}"));
-    match guard.0.remove(&format!("slot_{slot}")) {
-        Ok(true) => Resp::ok(),
-        Ok(false) => Resp::err(format!("slot {slot} not found")),
-        Err(e) => Resp::err(format!("nvs error: {e}")),
+
+    let (tx, rx) = mpsc::sync_channel(1);
+    if delete_tx
+        .send(DeleteRequest {
+            slot: slot as u16,
+            reply: tx,
+        })
+        .is_err()
+    {
+        return Resp::err("delete channel closed");
+    }
+    match rx.recv() {
+        Ok(true) => {
+            let mut guard = lock_nvs(nvs);
+            let _ = guard.0.remove(&format!("label_{slot}"));
+            let _ = guard.0.remove(&format!("slot_{slot}"));
+            Resp::ok()
+        }
+        Ok(false) => Resp::err("sensor delete failed"),
+        Err(_) => Resp::err("delete response failed"),
     }
 }
 

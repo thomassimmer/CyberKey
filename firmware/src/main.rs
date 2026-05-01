@@ -106,6 +106,8 @@ fn main() -> anyhow::Result<()> {
     let (enroll_tx, enroll_rx) = std::sync::mpsc::sync_channel::<cli::EnrollRequest>(1);
     // Fingerprint-verify channel — CLI task sends an unlock request; main loop verifies.
     let (verify_tx, verify_rx) = std::sync::mpsc::sync_channel::<cli::VerifyRequest>(1);
+    // Fingerprint-delete channel — CLI task requests a single template slot deletion.
+    let (delete_tx, delete_rx) = std::sync::mpsc::sync_channel::<cli::DeleteRequest>(1);
 
     // UART0 (USB-serial, GPIO1=TX / GPIO3=RX) — CLI wire protocol listener.
     // Safety: transmute to 'static is valid because the peripheral registers
@@ -120,7 +122,7 @@ fn main() -> anyhow::Result<()> {
         &uart_cfg,
     )?;
     let uart0: esp_idf_svc::hal::uart::UartDriver<'static> = unsafe { core::mem::transmute(uart0) };
-    cli::spawn(uart0, nvs.clone(), enroll_tx, verify_tx)?;
+    cli::spawn(uart0, nvs.clone(), cli::Senders { enroll_tx, verify_tx, delete_tx })?;
 
     // RTC init (I2C0 on GPIO21/22)
     let config = I2cConfig::new().baudrate(Hertz(board::I2C_FREQ_HZ));
@@ -243,6 +245,7 @@ fn main() -> anyhow::Result<()> {
         nvs,
         enroll_rx,
         verify_rx,
+        delete_rx,
         &mut i2c_driver,
         &mut read_battery,
     )?;

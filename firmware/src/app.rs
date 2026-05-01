@@ -165,6 +165,7 @@ pub fn run<D, A, B, C, P, BL, F>(
     nvs: Arc<Mutex<config_store::SharedNvs>>,
     enroll_rx: std::sync::mpsc::Receiver<cli::EnrollRequest>,
     verify_rx: std::sync::mpsc::Receiver<cli::VerifyRequest>,
+    delete_rx: std::sync::mpsc::Receiver<cli::DeleteRequest>,
     i2c: &mut I2cDriver<'_>,
     read_battery: &mut F,
 ) -> anyhow::Result<()>
@@ -345,6 +346,23 @@ where
         // CLI-driven factory reset.
         if cli::FACTORY_RESET.load(Ordering::Relaxed) {
             do_factory_reset("CLI", disp, &sb, fp, &nvs);
+        }
+
+        // CLI-driven delete request: remove a single fingerprint template from the sensor.
+        if let Ok(request) = delete_rx.try_recv() {
+            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
+            display::show_status_2line(disp, &sb, "Deleting", &format!("slot {}", request.slot));
+            fp.wake();
+            let success = fp.delete_template(request.slot, 1);
+            let _ = request.reply.send(success);
+            if success {
+                display::show_status(disp, &sb, "Delete OK");
+            } else {
+                display::show_status(disp, &sb, "Delete failed");
+            }
+            fp.reactivate();
+            FreeRtos::delay_ms(1500);
+            restore_idle_screen(disp, &sb, connected, pairing_open, passkey);
         }
 
         // CLI-driven enrollment: pick up a pending EnrollRequest from the CLI task.

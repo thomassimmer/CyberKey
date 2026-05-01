@@ -180,6 +180,8 @@ impl<'d> FingerprintSensor<'d> {
     /// Must be called before any command sequence that follows an idle/sleep
     /// period, or after the sensor has returned to autonomous wakeup mode.
     fn reactivate_sensor(&mut self, ctx: &str) {
+        // Safety: drain_rx is safe to call as long as self.driver.uart is valid.
+        // If the UART handle has been moved or dropped elsewhere, this will panic.
         self.driver.drain_rx();
         if let Err(e) = self.driver.activate() {
             log::warn!("{ctx}: re-activate error: {:?}", e);
@@ -406,6 +408,23 @@ impl<'d> FingerprintSensor<'d> {
             }
             Err(e) => {
                 log::warn!("Fingerprint: empty_template_library error: {:?}", e);
+                false
+            }
+        }
+    }
+
+    /// Delete one or more stored templates from the sensor.
+    ///
+    /// Returns `true` on success.
+    /// NOTE: Does NOT call reactivate_sensor() — assumes the sensor is already awake.
+    pub fn delete_template(&mut self, page_id: u16, count: u16) -> bool {
+        if !self.ready {
+            return false;
+        }
+        match self.driver.delete_template(page_id, count) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("fp: delete_template error slot={} count={} -> {:?}", page_id, count, e);
                 false
             }
         }
