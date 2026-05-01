@@ -754,7 +754,7 @@ mod tests {
         // DATA must be: [PS_CONTROL_BLN, Breathing=1, Blue=1, loops=3]
         assert_eq!(
             extract_tx_data(&driver.uart.tx),
-            vec![PS_CONTROL_BLN, 0x01, 0x01, 0x03]
+            vec![PS_CONTROL_BLN, 0x01, 0x01, 0x01, 0x03]
         );
     }
 
