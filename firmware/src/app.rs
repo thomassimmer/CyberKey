@@ -397,6 +397,11 @@ where
                             display::show_enroll_ok(disp, &sb, request.slot);
                             break;
                         }
+                        fingerprint::EnrollAck::DuplicateFinger => {
+                            let _ = request.reply.send(cli::EnrollResp::DuplicateFinger);
+                            display::show_status_2line(disp, &sb, "Enroll", "Already enrolled");
+                            break;
+                        }
                         fingerprint::EnrollAck::Failed => {
                             let _ = request.reply.send(cli::EnrollResp::Failed);
                             display::show_status_2line(disp, &sb, "Enroll", "Failed");

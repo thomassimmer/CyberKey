@@ -17,8 +17,8 @@
 use heapless::Vec;
 
 use crate::commands::{
-    AutoEnrollFlags, LedColor, LedMode, PS_ACTIVATE, PS_AUTO_ENROLL, PS_AUTO_IDENTIFY,
-    PS_CONTROL_BLN, PS_DELET_CHAR, PS_HANDSHAKE,
+    LedColor, LedMode, PS_ACTIVATE, PS_AUTO_IDENTIFY, PS_CONTROL_BLN, PS_DELET_CHAR, PS_GEN_CHAR,
+    PS_GET_ENROLL_IMAGE, PS_HANDSHAKE, PS_REG_MODEL, PS_SEARCH, PS_STORE_CHAR,
 };
 use crate::error::FingerprintError;
 use crate::packet::{self, DEFAULT_ADDR, Frame, MAX_DATA_LEN, PacketType};
@@ -30,6 +30,11 @@ use crate::packet::{self, DEFAULT_ADDR, Frame, MAX_DATA_LEN, PacketType};
 /// Milliseconds to wait (yielding 1 ms per attempt) before [`Fingerprint2Driver::read_byte`]
 /// gives up and returns [`FingerprintError::Timeout`].
 const READ_TIMEOUT_MS: u32 = 500;
+
+/// Extended timeout for commands that write to the sensor's internal flash
+/// (`PS_STORE_CHAR`). Writing a template to flash on the U203's STM32 MCU can
+/// take over 500 ms; this value gives a comfortable margin.
+pub const READ_TIMEOUT_FLASH_MS: u32 = 3000;
 
 /// Maximum serialized frame size in bytes.
 /// = header(9) + MAX_DATA_LEN + checksum(2)
@@ -116,9 +121,9 @@ where
     // =======================================================================
 
     /// Read one byte, yielding 1 ms to the scheduler on each `WouldBlock`
-    /// until data arrives or [`READ_TIMEOUT_MS`] milliseconds have elapsed.
-    fn read_byte(&mut self) -> Result<u8, FingerprintError<E>> {
-        for _ in 0..READ_TIMEOUT_MS {
+    /// until data arrives or `timeout_ms` milliseconds have elapsed.
+    fn read_byte_timeout(&mut self, timeout_ms: u32) -> Result<u8, FingerprintError<E>> {
+        for _ in 0..timeout_ms {
             match embedded_hal_nb::serial::Read::read(&mut self.uart) {
                 Ok(b) => return Ok(b),
                 Err(nb::Error::WouldBlock) => self.delay.delay_ms(1),
@@ -126,6 +131,11 @@ where
             }
         }
         Err(FingerprintError::Timeout)
+    }
+
+    /// Read one byte with the standard [`READ_TIMEOUT_MS`] deadline.
+    fn read_byte(&mut self) -> Result<u8, FingerprintError<E>> {
+        self.read_byte_timeout(READ_TIMEOUT_MS)
     }
 
     /// Write one byte, spinning on `WouldBlock`.
@@ -164,11 +174,18 @@ where
         self.flush_uart()
     }
 
-    /// Receive one complete frame from UART, validating the magic bytes and
-    /// checksum as bytes arrive.
-    fn read_frame(&mut self) -> Result<Frame, FingerprintError<E>> {
-        // --- Magic (2 bytes) ------------------------------------------------
-        let m0 = self.read_byte()?;
+    /// Receive one complete frame from UART using a custom first-byte timeout.
+    ///
+    /// `first_byte_timeout_ms` controls how long to wait for the very first byte
+    /// of the response. Subsequent bytes within the same frame always use
+    /// [`READ_TIMEOUT_MS`] — once the sensor has started transmitting, bytes
+    /// arrive quickly at 115 200 baud.
+    fn read_frame_timeout(
+        &mut self,
+        first_byte_timeout_ms: u32,
+    ) -> Result<Frame, FingerprintError<E>> {
+        // --- Magic (2 bytes) — first byte uses the caller-supplied timeout ----
+        let m0 = self.read_byte_timeout(first_byte_timeout_ms)?;
         let m1 = self.read_byte()?;
         if m0 != 0xEF || m1 != 0x01 {
             return Err(FingerprintError::BadFrame);
@@ -255,7 +272,18 @@ where
     /// Maps any other confirmation code to the appropriate
     /// [`FingerprintError`] variant.
     fn read_ack(&mut self) -> Result<Frame, FingerprintError<E>> {
-        let frame = self.read_frame()?;
+        self.read_ack_timeout(READ_TIMEOUT_MS)
+    }
+
+    /// Like [`read_ack`](Self::read_ack) but with a custom first-byte timeout.
+    ///
+    /// Use this for commands that trigger slow sensor-side operations (e.g.
+    /// flash writes) where the ACK may not arrive within [`READ_TIMEOUT_MS`].
+    fn read_ack_timeout(
+        &mut self,
+        first_byte_timeout_ms: u32,
+    ) -> Result<Frame, FingerprintError<E>> {
+        let frame = self.read_frame_timeout(first_byte_timeout_ms)?;
         if frame.packet_type != PacketType::Ack {
             return Err(FingerprintError::BadFrame);
         }
@@ -323,66 +351,6 @@ where
         self.send_command(&[PS_HANDSHAKE])?;
         self.read_ack()?;
         Ok(())
-    }
-
-    /// Sends one `PS_AUTO_ENROLL` command and then reads the stream of stage ACKs.
-    ///
-    /// For each capture pass, the sensor emits three intermediate ACKs:
-    ///   - Stage 0x01: Start capture (waiting for finger)
-    ///   - Stage 0x02: Image OK (captured, safe to lift)
-    ///   - Stage 0x03: Lift OK (finger removed)
-    ///
-    /// The final ACK (Stage 0x06) indicates the template has been merged and stored.
-    /// Returns `Ok(())` only if every capture pass and the final storage succeed.
-    ///
-    /// # Parameters
-    ///
-    /// - `id` — page ID in the sensor flash where the template will be stored.
-    /// - `count` — number of capture passes (typically 3–6).
-    /// - `flags` — whether to overwrite an already-occupied slot.
-    pub fn auto_enroll(
-        &mut self,
-        id: u16,
-        count: u8,
-        flags: AutoEnrollFlags,
-    ) -> Result<(), FingerprintError<E>> {
-        let [id_hi, id_lo] = id.to_be_bytes();
-        self.send_command(&[PS_AUTO_ENROLL, id_hi, id_lo, count, 0x00, flags.as_byte()])?;
-        self.read_ack()?; // Consume immediate command ACK
-
-        for _ in 0..count {
-            self.read_ack()?;
-        }
-        Ok(())
-    }
-
-    /// Use [`Self::read_enroll_pass`] repeatedly to receive each stage ACK
-    /// non-blockingly (0x01, 0x02, 0x03 per pass), allowing the caller to
-    /// update a display between captures.
-    pub fn begin_auto_enroll(
-        &mut self,
-        id: u16,
-        count: u8,
-        flags: AutoEnrollFlags,
-    ) -> Result<(), FingerprintError<E>> {
-        let [id_hi, id_lo] = id.to_be_bytes();
-        self.send_command(&[PS_AUTO_ENROLL, id_hi, id_lo, count, 0x00, flags.as_byte()])?;
-        self.read_ack()?;
-        Ok(())
-    }
-
-    /// Poll for one enrollment-pass ACK — **non-blocking**.
-    ///
-    /// Returns `Ok(())` on a success ACK, `Err(nb::Error::WouldBlock)` when no
-    /// byte is available yet, or `Err(nb::Error::Other(...))` on sensor error.
-    pub fn read_enroll_pass(
-        &mut self,
-    ) -> nb::Result<heapless::Vec<u8, MAX_DATA_LEN>, FingerprintError<E>> {
-        match self.poll_event()? {
-            DriverEvent::Ack { confirm: 0, data } => Ok(data),
-            DriverEvent::Ack { confirm, .. } => Err(nb::Error::Other(Self::map_confirm(confirm))),
-            DriverEvent::Wakeup => Err(nb::Error::Other(FingerprintError::BadFrame)),
-        }
     }
 
     /// High-level autonomous identification (1:N search across all enrolled templates).
@@ -458,6 +426,90 @@ where
         Ok(())
     }
 
+    /// Capture a finger image optimised for enrollment quality (`PS_GET_ENROLL_IMAGE`, 0x29).
+    ///
+    /// Drop-in equivalent of [`get_image`](Self::get_image) but uses the enrollment-specific
+    /// opcode. The sensor firmware may apply different quality thresholds internally.
+    /// Always call this — not `get_image` — during manual enrollment passes.
+    ///
+    /// Returns `Ok(())` on a successful capture, `Err(SensorError(2))` when no finger
+    /// is present.
+    pub fn get_enroll_image(&mut self) -> Result<(), FingerprintError<E>> {
+        self.send_command(&[PS_GET_ENROLL_IMAGE])?;
+        self.read_ack()?;
+        Ok(())
+    }
+
+    /// Extract features from the last captured image into a character buffer (`PS_GEN_CHAR`, 0x02).
+    ///
+    /// Must be called immediately after a successful [`get_enroll_image`](Self::get_enroll_image)
+    /// or [`get_image`](Self::get_image). The resulting feature set is written into the
+    /// sensor's internal CharBuffer identified by `buf` (1 or 2).
+    ///
+    /// During a 3-pass enrollment the buffer alternates: pass 1 → buf 1, pass 2 → buf 2,
+    /// pass 3 → buf 1 (overwrites with the highest-quality capture). After all passes,
+    /// CharBuffer 1 and CharBuffer 2 hold complementary feature sets ready for
+    /// [`reg_model`](Self::reg_model).
+    pub fn gen_char(&mut self, buf: u8) -> Result<(), FingerprintError<E>> {
+        self.send_command(&[PS_GEN_CHAR, buf])?;
+        self.read_ack()?;
+        Ok(())
+    }
+
+    /// Search the template library for a match against a character buffer (`PS_SEARCH`, 0x04).
+    ///
+    /// Compares the feature set in CharBuffer `buf` against all stored templates in
+    /// the range `[start_page, start_page + page_count)`. No finger placement is required;
+    /// the buffer must already be populated by a prior [`gen_char`](Self::gen_char) call.
+    ///
+    /// Returns `Ok((page_id, score))` on a match, or `Err(NoMatch)` when no stored template
+    /// is similar enough.
+    ///
+    /// During duplicate detection at enrollment time, call with `buf = 1`, `start_page = 0`,
+    /// `page_count = <library capacity>`.
+    pub fn search(
+        &mut self,
+        buf: u8,
+        start_page: u16,
+        page_count: u16,
+    ) -> Result<(u16, u16), FingerprintError<E>> {
+        let [sp_hi, sp_lo] = start_page.to_be_bytes();
+        let [pc_hi, pc_lo] = page_count.to_be_bytes();
+        self.send_command(&[PS_SEARCH, buf, sp_hi, sp_lo, pc_hi, pc_lo])?;
+        let frame = self.read_ack()?; // returns Err(NoMatch) on confirm 0x09
+        if frame.data.len() < 5 {
+            return Err(FingerprintError::BadFrame);
+        }
+        let page_id = u16::from_be_bytes([frame.data[1], frame.data[2]]);
+        let score = u16::from_be_bytes([frame.data[3], frame.data[4]]);
+        Ok((page_id, score))
+    }
+
+    /// Merge CharBuffer 1 and CharBuffer 2 into a single template (`PS_REG_MODEL`, 0x05).
+    ///
+    /// Both buffers must be populated (via [`gen_char`](Self::gen_char)) before calling this.
+    /// The resulting template is written back into CharBuffer 1 and is ready to be
+    /// permanently stored with [`store_char`](Self::store_char).
+    pub fn reg_model(&mut self) -> Result<(), FingerprintError<E>> {
+        self.send_command(&[PS_REG_MODEL])?;
+        self.read_ack()?;
+        Ok(())
+    }
+
+    /// Persist a character buffer to the sensor's flash library (`PS_STORE_CHAR`, 0x06).
+    ///
+    /// Writes the template from CharBuffer `buf` (typically 1, after [`reg_model`](Self::reg_model))
+    /// into flash at `page_id`. This is the final step of a manual enrollment sequence.
+    ///
+    /// Uses [`READ_TIMEOUT_FLASH_MS`] for the ACK deadline: writing to the sensor's
+    /// internal flash can take over 500 ms, well beyond the standard command timeout.
+    pub fn store_char(&mut self, buf: u8, page_id: u16) -> Result<(), FingerprintError<E>> {
+        let [pid_hi, pid_lo] = page_id.to_be_bytes();
+        self.send_command(&[PS_STORE_CHAR, buf, pid_hi, pid_lo])?;
+        self.read_ack_timeout(READ_TIMEOUT_FLASH_MS)?;
+        Ok(())
+    }
+
     /// Delete one or more stored templates starting at `page_id`.
     ///
     /// To delete a single template pass `count = 1`.
@@ -489,13 +541,6 @@ where
     /// Set the sleep timeout in seconds (10-254).
     pub fn set_sleep_time(&mut self, seconds: u8) -> Result<(), FingerprintError<E>> {
         self.send_command(&[crate::commands::PS_SET_SLEEP_TIME, seconds])?;
-        self.read_ack()?;
-        Ok(())
-    }
-
-    /// Cancel any running auto enrollment or auto identification.
-    pub fn cancel_auto_flow(&mut self) -> Result<(), FingerprintError<E>> {
-        self.send_command(&[crate::commands::PS_CANCEL_AUTO_FLOW])?;
         self.read_ack()?;
         Ok(())
     }
@@ -594,8 +639,8 @@ mod tests {
     }
 
     use super::*;
-    use crate::commands::{AutoEnrollFlags, LedColor, LedMode};
-    use crate::commands::{PS_AUTO_ENROLL, PS_CONTROL_BLN, PS_DELET_CHAR, PS_HANDSHAKE};
+    use crate::commands::{LedColor, LedMode};
+    use crate::commands::{PS_CONTROL_BLN, PS_DELET_CHAR, PS_HANDSHAKE};
     use crate::packet::{self, DEFAULT_ADDR, Frame, MAX_DATA_LEN, PacketType};
 
     // =========================================================================
@@ -757,51 +802,6 @@ mod tests {
         assert_eq!(
             extract_tx_data(&driver.uart.tx),
             vec![PS_CONTROL_BLN, 0x01, 0x01, 0x01, 0x03]
-        );
-    }
-
-    // =========================================================================
-    // auto_enroll
-    // =========================================================================
-
-    /// count=3 → three consecutive success ACKs → Ok(()).
-    /// Verifies PS_AUTO_ENROLL opcode and big-endian id/count/flags bytes.
-    #[test]
-    fn auto_enroll_happy_path() {
-        // Need 1 command ACK + 3 capture ACKs = 4 ACKs total
-        let rx: Vec<u8> = (0..4).flat_map(|_| ack_bytes(&[0x00])).collect();
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(rx), NoopDelay);
-
-        assert_eq!(
-            driver.auto_enroll(
-                1,
-                3,
-                AutoEnrollFlags {
-                    allow_overwrite: false
-                }
-            ),
-            Ok(())
-        );
-        // DATA must be: [PS_AUTO_ENROLL, id_hi=0x00, id_lo=0x01, count=3, param_hi=0x00, param_lo=0x00]
-        assert_eq!(
-            extract_tx_data(&driver.uart.tx),
-            vec![PS_AUTO_ENROLL, 0x00, 0x01, 0x03, 0x00, 0x00]
-        );
-    }
-
-    /// Confirm code 0x06 (image too noisy) on the first capture pass → EnrollFailed.
-    #[test]
-    fn auto_enroll_quality_failure() {
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x06])), NoopDelay);
-        assert_eq!(
-            driver.auto_enroll(
-                1,
-                3,
-                AutoEnrollFlags {
-                    allow_overwrite: false
-                }
-            ),
-            Err(FingerprintError::EnrollFailed)
         );
     }
 

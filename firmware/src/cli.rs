@@ -43,6 +43,8 @@ pub enum EnrollResp {
     LiftFinger { step: u8, total: u8 },
     /// All captures merged and stored successfully.
     Done,
+    /// The captured finger is already enrolled in another slot.
+    DuplicateFinger,
     /// Enrollment failed (sensor error or begin_enroll rejected).
     Failed,
 }
@@ -415,6 +417,14 @@ fn cmd_add_entry(
             }
             Ok(EnrollResp::Done) => {
                 write_resp(uart, &Resp::ok_slot(slot as u8));
+                break;
+            }
+            Ok(EnrollResp::DuplicateFinger) => {
+                // Undo NVS writes — the slot must stay free since enrollment was rejected.
+                let mut guard = lock_nvs(nvs);
+                let _ = guard.0.remove(&format!("slot_{slot}"));
+                let _ = guard.0.remove(&format!("label_{slot}"));
+                write_resp(uart, &Resp::err("duplicate_finger"));
                 break;
             }
             Ok(EnrollResp::Failed) | Err(_) => {

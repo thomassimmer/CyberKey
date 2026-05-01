@@ -5,6 +5,32 @@
 //!   GPIO33 = White  = RX (sensor → MCU)
 //! Source: Grove UART convention (Pin1=TX, Pin2=RX from host perspective)
 //! confirmed against M5StickC Plus 2 docs (docs.m5stack.com).
+//!
+//! # Enrollment flow
+//!
+//! Enrollment is driven by a manual state machine rather than the sensor's
+//! high-level `PS_AUTO_ENROLL` command. This gives us the ability to perform
+//! a duplicate-finger check after the very first capture without any extra
+//! finger placement:
+//!
+//! ```text
+//! Pass 1 : GET_ENROLL_IMAGE → GEN_CHAR(buf=1) → SEARCH(buf=1) ← duplicate check
+//! Pass 2 : GET_ENROLL_IMAGE → GEN_CHAR(buf=2)
+//! Pass 3 : GET_ENROLL_IMAGE → GEN_CHAR(buf=1)  ← overwrites buf=1 with better quality
+//! Final  : REG_MODEL → STORE_CHAR(buf=1, slot)
+//! ```
+//!
+//! The buffer index alternates with each pass (`buf = ((pass - 1) % 2) + 1`), so
+//! odd passes write to CharBuffer 1 and even passes to CharBuffer 2. `REG_MODEL`
+//! merges the two buffers into a consolidated template stored in CharBuffer 1,
+//! which `STORE_CHAR` then writes to the sensor's flash library.
+//!
+//! From the caller's perspective (`app.rs`), the ACK sequence is identical to
+//! the old `PS_AUTO_ENROLL` stream:
+//!   `StartCapture` → `ImageOk` → `LiftOk`   (×N passes)
+//!   → `Done`
+//! with the addition of `DuplicateFinger` which can fire instead of `ImageOk`
+//! on the very first pass.
 
 use esp_idf_svc::hal::{
     delay::FreeRtos,
@@ -14,12 +40,19 @@ use esp_idf_svc::hal::{
     units::Hertz,
 };
 use fingerprint2_rs::{
-    commands::{AutoEnrollFlags, LedColor, LedMode},
+    commands::{LedColor, LedMode},
     DriverEvent, Fingerprint2Driver, FingerprintError,
 };
 
 const BAUD: u32 = 115_200;
 const SECURITY_LEVEL: u8 = 3;
+
+/// Total number of fingerprint slots in the sensor's template library.
+const LIBRARY_SIZE: u16 = 10;
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
 
 pub enum IdentifyResult {
     Match(u16),
@@ -27,25 +60,95 @@ pub enum IdentifyResult {
 }
 
 /// Progress event returned by [`FingerprintSensor::poll_enroll_ack`].
+///
+/// The caller receives one event per [`FingerprintSensor::poll_enroll_ack`] call.
+/// Events arrive in the following order for a successful N-pass enrollment:
+///
+/// ```text
+/// StartCapture                   ← sensor ready, waiting for finger (×N)
+/// ImageOk                        ← finger captured, safe to lift     (×N)
+/// LiftOk                         ← finger removed, next pass ready   (×N)
+/// Done                           ← template stored in flash
+/// ```
+///
+/// `DuplicateFinger` replaces the first `ImageOk` when the captured finger
+/// already exists in the library.
 pub enum EnrollAck {
-    /// No data available yet.
+    /// No event yet — call again after a short delay.
     Pending,
-    /// GET_IMAGE (stage 0x01): sensor is waiting for/capturing a finger.
+    /// Sensor is ready and waiting for the user to place their finger.
+    ///
+    /// Emitted once at the start of each capture pass.
     StartCapture,
-    /// GEN_CHAR (stage 0x02): capture complete, image being processed — safe to lift.
+    /// Finger captured successfully — safe to lift.
+    ///
+    /// On pass 1 this is only emitted after a successful duplicate check
+    /// (i.e. the finger is not already enrolled).
     ImageOk,
-    /// CHECK_LIFT (stage 0x03): finger lift detected.
+    /// Finger lift detected — ready for the next pass.
     LiftOk,
-    /// STORE_TEMPLATE (stage 0x06): all captures merged and stored — done.
+    /// All passes complete and the template has been stored in flash.
     Done,
-    /// Sensor returned a non-zero confirm code — enrollment failed.
+    /// The captured finger is already enrolled in the library.
+    ///
+    /// Enrollment is aborted; the caller should inform the user.
+    DuplicateFinger,
+    /// An unrecoverable sensor error occurred.
     Failed,
 }
+
+// ---------------------------------------------------------------------------
+// Private enrollment state machine
+// ---------------------------------------------------------------------------
+
+/// Internal phase within a single capture pass.
+#[derive(Clone, Copy)]
+enum ManualEnrollPhase {
+    /// Waiting for the user to place their finger on the pad.
+    ///
+    /// `announced` tracks whether `StartCapture` has already been emitted for
+    /// this pass; it is `false` at the start of every new pass.
+    WaitingForFinger { announced: bool },
+    /// Finger captured — waiting for the user to lift it.
+    WaitingForLift,
+    /// All passes done — running `REG_MODEL` + `STORE_CHAR` to finalise.
+    Finalizing,
+}
+
+/// State held for the duration of an enrollment session.
+struct EnrollSession {
+    /// Target slot in the sensor's flash library (0–9).
+    slot: u16,
+    /// Total number of capture passes requested (typically 3).
+    passes: u8,
+    /// Current pass index, 1-based.
+    current_pass: u8,
+    phase: ManualEnrollPhase,
+}
+
+impl EnrollSession {
+    /// Character buffer index for the current pass.
+    ///
+    /// Odd passes → CharBuffer 1, even passes → CharBuffer 2.
+    fn buf(&self) -> u8 {
+        if self.current_pass % 2 == 1 {
+            1
+        } else {
+            2
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FingerprintSensor
+// ---------------------------------------------------------------------------
 
 pub struct FingerprintSensor<'d> {
     driver: Fingerprint2Driver<UartDriver<'d>, FreeRtos>,
     ready: bool,
     smart_poll_until: Option<std::time::Instant>,
+    /// Active enrollment session, if one is in progress.
+    enroll_session: Option<EnrollSession>,
 }
 
 impl<'d> FingerprintSensor<'d> {
@@ -67,6 +170,7 @@ impl<'d> FingerprintSensor<'d> {
             driver: Fingerprint2Driver::new(uart_driver, FreeRtos),
             ready: false,
             smart_poll_until: None,
+            enroll_session: None,
         })
     }
 
@@ -106,66 +210,183 @@ impl<'d> FingerprintSensor<'d> {
         }
     }
 
-    /// Begin enrollment on `slot` with `count` capture passes.
-    /// Returns false if the sensor is not ready or the command fails.
-    /// Call `poll_enroll_ack` once per pass to track progress.
-    pub fn begin_enroll(&mut self, slot: u16, count: u8) -> bool {
+    /// Initialise a manual enrollment session for `slot` with `passes` capture rounds.
+    ///
+    /// Returns `false` if the sensor is not ready. On success, drive the session by
+    /// calling [`poll_enroll_ack`](Self::poll_enroll_ack) in a loop until `Done`,
+    /// `DuplicateFinger`, or `Failed` is returned.
+    pub fn begin_enroll(&mut self, slot: u16, passes: u8) -> bool {
         if !self.ready {
             return false;
         }
         self.reactivate_sensor("begin_enroll");
-
-        log::info!("begin_enroll slot={} count={}", slot, count);
-        self.driver
-            .begin_auto_enroll(
-                slot,
-                count,
-                AutoEnrollFlags {
-                    allow_overwrite: true,
-                },
-            )
-            .map_err(|e| log::warn!("begin_enroll error: {:?}", e))
-            .is_ok()
+        log::info!("begin_enroll slot={} passes={}", slot, passes);
+        self.enroll_session = Some(EnrollSession {
+            slot,
+            passes,
+            current_pass: 1,
+            phase: ManualEnrollPhase::WaitingForFinger { announced: false },
+        });
+        true
     }
 
-    /// Non-blocking poll for one enrollment ACK.
+    /// Advance the enrollment state machine by one step.
     ///
-    /// Each capture produces three intermediate ACKs (GET_IMAGE → GEN_CHAR →
-    /// CHECK_LIFT). Only CHECK_LIFT and STORE_TEMPLATE are meaningful to the
-    /// caller; everything else is `Pending`.
+    /// Call this in a polling loop (with a short delay between calls so the
+    /// FreeRTOS scheduler can run other tasks). The state machine progresses
+    /// through the following phases for each pass:
+    ///
+    /// 1. **WaitingForFinger** — polls `PS_GET_ENROLL_IMAGE` until a finger is
+    ///    detected. Emits `StartCapture` once per pass to notify the caller,
+    ///    then `Pending` until a finger arrives. When a finger is captured,
+    ///    runs `PS_GEN_CHAR` to extract features into the appropriate
+    ///    CharBuffer. On pass 1 only, runs `PS_SEARCH` for duplicate detection
+    ///    before emitting `ImageOk`.
+    ///
+    /// 2. **WaitingForLift** — polls `PS_GET_ENROLL_IMAGE` until the finger is
+    ///    removed (`SensorError(2)`). Emits `LiftOk` and advances to the next
+    ///    pass, or transitions to `Finalizing` after the last pass.
+    ///
+    /// 3. **Finalizing** — runs `PS_REG_MODEL` (merge CharBuffer 1 + 2) then
+    ///    `PS_STORE_CHAR` (write to flash). Emits `Done` on success.
     pub fn poll_enroll_ack(&mut self) -> EnrollAck {
-        match self.driver.poll_event() {
-            Err(nb::Error::WouldBlock) => EnrollAck::Pending,
-            Err(nb::Error::Other(e)) => {
-                log::warn!("enroll poll error: {:?}", e);
-                EnrollAck::Failed
+        let session = match self.enroll_session.as_mut() {
+            None => return EnrollAck::Failed,
+            Some(s) => s,
+        };
+
+        match session.phase {
+            // ------------------------------------------------------------------
+            // Phase 1: waiting for the user to place their finger
+            // ------------------------------------------------------------------
+            ManualEnrollPhase::WaitingForFinger { announced } => {
+                // Emit StartCapture once per pass so the caller can notify the CLI.
+                if !announced {
+                    session.phase = ManualEnrollPhase::WaitingForFinger { announced: true };
+                    return EnrollAck::StartCapture;
+                }
+
+                match self.driver.get_enroll_image() {
+                    // No finger yet — keep waiting.
+                    Err(FingerprintError::SensorError(2)) => EnrollAck::Pending,
+
+                    // Sensor unresponsive — abort.
+                    Err(FingerprintError::Timeout) => {
+                        log::warn!(
+                            "enroll: get_enroll_image timeout on pass {}",
+                            session.current_pass
+                        );
+                        self.enroll_session = None;
+                        EnrollAck::Failed
+                    }
+
+                    // Any other sensor error — abort.
+                    Err(e) => {
+                        log::warn!(
+                            "enroll: get_enroll_image error on pass {}: {:?}",
+                            session.current_pass,
+                            e
+                        );
+                        self.enroll_session = None;
+                        EnrollAck::Failed
+                    }
+
+                    // Finger detected — extract features into the appropriate CharBuffer.
+                    Ok(()) => {
+                        let buf = session.buf();
+                        let pass = session.current_pass;
+                        log::info!("enroll: pass {} finger ok, gen_char buf={}", pass, buf);
+
+                        if let Err(e) = self.driver.gen_char(buf) {
+                            log::warn!("enroll: gen_char error on pass {}: {:?}", pass, e);
+                            self.enroll_session = None;
+                            return EnrollAck::Failed;
+                        }
+
+                        // Pass 1 only: search CharBuffer 1 against the full library to
+                        // detect duplicates before committing to the enrollment sequence.
+                        if pass == 1 {
+                            match self.driver.search(1, 0, LIBRARY_SIZE) {
+                                Ok((matched_slot, score)) if matched_slot != session.slot => {
+                                    log::info!(
+                                        "enroll: duplicate detected — finger already at slot={} score={}",
+                                        matched_slot, score
+                                    );
+                                    self.enroll_session = None;
+                                    return EnrollAck::DuplicateFinger;
+                                }
+                                Ok(_) => {
+                                    // Match on the target slot itself (shouldn't happen for a
+                                    // new enrollment, but harmless — proceed normally).
+                                }
+                                Err(FingerprintError::NoMatch) => {
+                                    // No duplicate found — proceed.
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "enroll: search error during duplicate check: {:?}",
+                                        e
+                                    );
+                                    self.enroll_session = None;
+                                    return EnrollAck::Failed;
+                                }
+                            }
+                        }
+
+                        session.phase = ManualEnrollPhase::WaitingForLift;
+                        EnrollAck::ImageOk
+                    }
+                }
             }
-            Ok(DriverEvent::Wakeup) => {
-                log::info!("enroll: unexpected wakeup");
-                EnrollAck::Pending
-            }
-            Ok(DriverEvent::Ack { confirm: 0, data }) => {
-                let stage = data.get(1).copied().unwrap_or(0);
-                log::info!(
-                    "enroll ack stage=0x{:02X} data={:02X?}",
-                    stage,
-                    data.as_slice()
-                );
-                match stage {
-                    0x01 => EnrollAck::StartCapture,
-                    0x02 => EnrollAck::ImageOk,
-                    0x03 => EnrollAck::LiftOk,
-                    0x06 => EnrollAck::Done,
+
+            // ------------------------------------------------------------------
+            // Phase 2: waiting for the user to lift their finger
+            // ------------------------------------------------------------------
+            ManualEnrollPhase::WaitingForLift => {
+                match self.driver.get_enroll_image() {
+                    // No finger — lift confirmed.
+                    Err(FingerprintError::SensorError(2)) => {
+                        let pass = session.current_pass;
+                        let passes = session.passes;
+                        log::info!("enroll: pass {} lift ok", pass);
+
+                        if pass == passes {
+                            // Last pass done — move to finalisation.
+                            session.phase = ManualEnrollPhase::Finalizing;
+                        } else {
+                            session.current_pass += 1;
+                            session.phase =
+                                ManualEnrollPhase::WaitingForFinger { announced: false };
+                        }
+                        EnrollAck::LiftOk
+                    }
+
+                    // Finger still present, or transient read error — keep waiting.
                     _ => EnrollAck::Pending,
                 }
             }
-            Ok(DriverEvent::Ack { confirm, data }) => {
-                log::warn!(
-                    "enroll ack error confirm=0x{:02X} data={:02X?}",
-                    confirm,
-                    data.as_slice()
-                );
-                EnrollAck::Failed
+
+            // ------------------------------------------------------------------
+            // Phase 3: merge + store the final template
+            // ------------------------------------------------------------------
+            ManualEnrollPhase::Finalizing => {
+                let slot = session.slot;
+                log::info!("enroll: finalizing — reg_model + store_char slot={}", slot);
+
+                if let Err(e) = self.driver.reg_model() {
+                    log::warn!("enroll: reg_model error: {:?}", e);
+                    self.enroll_session = None;
+                    return EnrollAck::Failed;
+                }
+
+                if let Err(e) = self.driver.store_char(1, slot) {
+                    log::warn!("enroll: store_char error: {:?}", e);
+                    self.enroll_session = None;
+                    return EnrollAck::Failed;
+                }
+
+                self.enroll_session = None;
+                EnrollAck::Done
             }
         }
     }

@@ -98,10 +98,18 @@ This command initiates fingerprint enrollment. The firmware streams enrollment p
 On failure (e.g., bad fingerprint capture, NVS full):
 
 ```json
-← {"ok":false,"error":"enrollment failed: bad image on step 2"}
+← {"ok":false,"error":"enrollment failed"}
 ```
 
-**Atomicity guarantee**: if enrollment succeeds on the sensor but the NVS write fails, the firmware deletes the template before returning the error. The caller never sees a state where the sensor has a template with no matching NVS entry.
+If the finger is already enrolled in another slot:
+
+```json
+← {"ok":false,"error":"duplicate_finger"}
+```
+
+The CLI detects `"duplicate_finger"` by string match on the error field and shows a dedicated message without offering a retry (re-trying with the same finger would produce the same result).
+
+**Atomicity guarantee**: if enrollment fails for any reason — including a duplicate detection — the firmware removes the NVS entries it had already written (`slot_N` / `label_N`) before returning the error. The caller never sees a state where the sensor has a template with no matching NVS entry, nor an NVS entry with no matching sensor template.
 
 ### `remove_entry`
 
@@ -160,13 +168,38 @@ This prevents a USB-connected malicious host from exfiltrating TOTP secrets with
 
 ## Enrollment Implementation Notes
 
-The enrollment flow is designed for high reactivity. For each capture pass, the sensor emits three distinct stage-coded ACKs:
+### Manual enrollment state machine
 
-1. **Stage 0x01 (StartCapture)**: Sensor is ready. Firmware sends `place_finger` event to CLI.
-2. **Stage 0x02 (ImageOk)**: Image captured and being processed. Firmware sends `lift_finger` event immediately (user can lift now).
-3. **Stage 0x03 (LiftOk)**: Finger lift confirmed. Firmware prepares for the next pass.
+Enrollment is driven by a firmware-side state machine using the sensor's low-level commands rather than the high-level `PS_AUTO_ENROLL` opcode. This allows duplicate detection to be integrated into the first capture pass at zero extra cost to the user (no additional finger placement).
 
-This 3-stage loop ensures the user is prompted to lift their finger as soon as the hardware is done with the capture, minimizing the required contact time.
+For each capture pass the sequence is:
+
+| Step | Command | Purpose |
+|------|---------|---------|
+| `PS_GET_ENROLL_IMAGE` (0x29) | Capture finger image (enrollment-optimised opcode) |
+| `PS_GEN_CHAR` (0x02) | Extract feature set into CharBuffer 1 (odd passes) or CharBuffer 2 (even passes) |
+| `PS_SEARCH` (0x04) — **pass 1 only** | Search CharBuffer 1 against the full template library; abort if a different slot matches |
+
+After all passes:
+
+| Step | Command | Purpose |
+|------|---------|---------|
+| `PS_REG_MODEL` (0x05) | Merge CharBuffer 1 + CharBuffer 2 into a single template (result in CharBuffer 1) |
+| `PS_STORE_CHAR` (0x06) | Write CharBuffer 1 to flash at the target slot |
+
+The buffer alternates with each pass (`odd → buf 1, even → buf 2`), so the final `PS_REG_MODEL` always has two complementary captures to merge. Pass 3 overwrites CharBuffer 1 with a fresher, higher-quality capture before the merge.
+
+`PS_STORE_CHAR` uses an extended ACK timeout of 3 000 ms (vs. the standard 500 ms) because writing to the sensor's internal STM32 flash can take over 500 ms.
+
+### ACK event sequence visible to the CLI
+
+For each pass, the firmware emits:
+
+1. **`StartCapture`**: Sensor ready, waiting for the user's finger. Firmware sends `place_finger` event to CLI.
+2. **`ImageOk`**: Image captured. On pass 1, this is only emitted after a successful duplicate check. Firmware sends `lift_finger` event immediately (user can lift now).
+3. **`LiftOk`**: Finger lift confirmed. Firmware prepares for the next pass.
+
+### FreeRTOS task split
 
 The `add_entry` flow uses two FreeRTOS tasks:
 
@@ -175,4 +208,4 @@ The `add_entry` flow uses two FreeRTOS tasks:
 
 The channel is an `mpsc::sync_channel` — bounded, blocking send (capacity 1). The main loop blocks if the CLI task is not consuming events fast enough, which provides natural backpressure.
 
-This is why enrollment cannot be triggered from the main loop and the CLI task simultaneously: the main loop owns the fingerprint driver, and only one enrollment can be in progress at a time. The CLI task's `add_entry` command sets a flag that the main loop checks before starting any other fingerprint operation.
+This is why enrollment cannot be triggered from the main loop and the CLI task simultaneously: the main loop owns the fingerprint driver, and only one enrollment can be in progress at a time.

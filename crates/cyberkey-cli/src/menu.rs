@@ -143,6 +143,12 @@ fn action_add(device: &mut Device) -> anyhow::Result<()> {
                 assigned_slot = Some(slot);
                 break;
             }
+            Err(e) if e.to_string().contains("duplicate_finger") => {
+                println!(
+                    "  ✗ This finger is already enrolled. Use a different finger. You have {} attempt(s) left.",
+                    MAX_ENROLL_RETRIES - attempt
+                );
+            }
             Err(e) if attempt < MAX_ENROLL_RETRIES => {
                 println!(
                     "  ✗ Enrollment failed ({e}). You have {} attempt(s) left.",

@@ -8,8 +8,15 @@
 // Opcode constants
 // ---------------------------------------------------------------------------
 
-/// Collect a finger image into the image buffer.
+/// Collect a finger image into the image buffer (identification / smart-poll use).
 pub const PS_GET_IMAGE: u8 = 0x01;
+/// Collect a finger image optimised for enrollment quality.
+///
+/// Functionally identical to [`PS_GET_IMAGE`] at the protocol level (no parameters,
+/// same ACK format), but the sensor firmware may apply different internal thresholds.
+/// Always prefer this opcode during enrollment passes; use [`PS_GET_IMAGE`] for
+/// identification polling.
+pub const PS_GET_ENROLL_IMAGE: u8 = 0x29;
 /// Generate a character file from the image buffer into a char buffer slot.
 pub const PS_GEN_CHAR: u8 = 0x02;
 /// Search the library for a matching template.
@@ -25,12 +32,8 @@ pub const PS_STORE_CHAR: u8 = 0x06;
 pub const PS_DELET_CHAR: u8 = 0x0C;
 /// Empty the entire template library.
 pub const PS_EMPTY: u8 = 0x0D;
-/// High-level autonomous enrollment — the sensor manages all capture steps.
-pub const PS_AUTO_ENROLL: u8 = 0x31;
 /// High-level autonomous identification — returns the matched page ID.
 pub const PS_AUTO_IDENTIFY: u8 = 0x32;
-/// Cancel auto enrollment or auto identification.
-pub const PS_CANCEL_AUTO_FLOW: u8 = 0x30;
 /// Verify that the module is powered on and responsive.
 pub const PS_HANDSHAKE: u8 = 0x35;
 /// Set the operating mode of the sensor.
@@ -83,30 +86,6 @@ pub enum LedColor {
 }
 
 // ---------------------------------------------------------------------------
-// AutoEnrollFlags
-// ---------------------------------------------------------------------------
-
-/// Flags byte for [`PS_AUTO_ENROLL`].
-///
-/// Currently only one flag is defined. All other bits must be zero.
-pub struct AutoEnrollFlags {
-    /// When `true`, an existing template at the target page ID is silently
-    /// overwritten. When `false`, enrollment is rejected if the slot is
-    /// already occupied.
-    pub allow_overwrite: bool,
-}
-
-impl AutoEnrollFlags {
-    /// Encode the flags into the single byte expected by the sensor.
-    ///
-    /// From the official M5Stack source:
-    /// `FINGERPRINT_AUTO_ENROLL_ALLOW_OVERWRITE_ID = (1 << 3)`
-    pub fn as_byte(&self) -> u8 {
-        (self.allow_overwrite as u8) << 3
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -145,33 +124,6 @@ mod tests {
         assert_eq!(LedMode::Off as u8, 4);
         assert_eq!(LedMode::FadeIn as u8, 5);
         assert_eq!(LedMode::FadeOut as u8, 6);
-    }
-
-    // ------------------------------------------------------------------
-    // AutoEnrollFlags::as_byte
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn auto_enroll_flags_false_is_zero() {
-        assert_eq!(
-            AutoEnrollFlags {
-                allow_overwrite: false
-            }
-            .as_byte(),
-            0x00
-        );
-    }
-
-    #[test]
-    fn auto_enroll_flags_allow_overwrite_is_bit3() {
-        // Official: FINGERPRINT_AUTO_ENROLL_ALLOW_OVERWRITE_ID = (1 << 3) = 0x08
-        assert_eq!(
-            AutoEnrollFlags {
-                allow_overwrite: true
-            }
-            .as_byte(),
-            0x08
-        );
     }
 
     // ------------------------------------------------------------------
