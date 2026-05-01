@@ -190,6 +190,8 @@ impl<'d> FingerprintSensor<'d> {
     /// a non-autonomous state. Mirrors what `begin_enroll` does up-front.
     pub fn reactivate(&mut self) {
         self.driver.drain_rx();
+        // Ensure we are in Active Mode (1) before starting the smart poll window.
+        let _ = self.driver.set_work_mode(1);
         // Skip activate() (which keeps the sensor awake but deaf for ~10s) and go straight
         // to a smart-poll window so a freshly enrolled finger can be tested immediately.
         self.smart_poll_until =
@@ -212,12 +214,21 @@ impl<'d> FingerprintSensor<'d> {
         let _ = self.driver.set_sleep_time(10);
     }
 
-    /// Wake the sensor from standby.
+    /// Wake the sensor from standby or refresh the active polling window.
     pub fn wake(&mut self) {
         if !self.ready {
             return;
         }
-        log::info!("fp: waking up");
+
+        // If already polling and we have more than 5 seconds left, just keep going
+        // to avoid redundant UART traffic on every button press.
+        if let Some(until) = self.smart_poll_until {
+            if until > std::time::Instant::now() + std::time::Duration::from_secs(5) {
+                return;
+            }
+        }
+
+        log::info!("fp: waking up / refreshing poll window");
         self.driver.drain_rx();
 
         // Switch back to "Active Mode" (always-on, ready for commands).
@@ -272,9 +283,12 @@ impl<'d> FingerprintSensor<'d> {
         // 1. SMART POLLING WINDOW (if active)
         if let Some(until) = self.smart_poll_until {
             if std::time::Instant::now() > until {
-                // Window expired — let the sensor go to sleep on its own
+                // Window expired — transition to Timed Sleep (mode 0) so the sensor
+                // can eventually sleep and trigger a Wakeup event on touch.
                 self.smart_poll_until = None;
-                log::info!("fp: smart poll window expired, sensor will sleep in ~10s");
+                log::info!("fp: smart poll window expired, entering Timed Sleep");
+                let _ = self.driver.set_work_mode(0);
+                let _ = self.driver.set_sleep_time(10);
             } else {
                 self.driver.drain_rx();
                 match self.driver.get_image() {

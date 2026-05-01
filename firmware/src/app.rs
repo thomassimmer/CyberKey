@@ -88,8 +88,10 @@ fn wake_screen_if_off<BL: OutputPin>(
     if !*screen_on {
         backlight.set_high().ok();
         *screen_on = true;
-        fp.wake();
     }
+    // Always ensure the sensor is in Active Mode and polling when there is activity.
+    // fp.wake() is optimized to skip redundant UART traffic if already polling.
+    fp.wake();
 }
 
 /// Restore the main idle screen after any action that temporarily takes over the display.
