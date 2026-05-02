@@ -468,11 +468,11 @@ where
             Some(fingerprint::IdentifyResult::Match(id)) => {
                 wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
 
-                let key = format!("slot_{}", id);
-                let mut buf = [0u8; 65];
-                let totp_result = {
+                let mut secret_buf = [0u8; 65];
+                let mut label_buf = [0u8; 257]; // labels stored up to 256 bytes
+                let (totp_result, label) = {
                     let guard = config_store::lock_nvs(&nvs);
-                    match guard.0.get_str(&key, &mut buf) {
+                    let totp = match guard.0.get_str(&format!("slot_{}", id), &mut secret_buf) {
                         Ok(Some(secret)) => {
                             let now =
                                 unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64;
@@ -486,13 +486,21 @@ where
                             log::warn!("NVS read error: {:?}", e);
                             None
                         }
-                    }
+                    };
+                    let label = guard
+                        .0
+                        .get_str(&format!("label_{}", id), &mut label_buf)
+                        .ok()
+                        .flatten()
+                        .unwrap_or("")
+                        .to_string();
+                    (totp, label)
                 }; // guard dropped here
 
                 if let Some(result) = totp_result {
                     match result {
                         Ok(code) => {
-                            display::show_totp(disp, &sb, code);
+                            display::show_totp(disp, &sb, &label, code);
                             if connected > 0 {
                                 ble.type_digits(&format!("{:06}", code));
                                 log::info!("TOTP typed: {:06}", code);

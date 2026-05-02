@@ -96,6 +96,25 @@ fn draw_mini_center<D: DrawTarget<Color = Rgb565>>(d: &mut D, text: &str, y: i32
     let _ = draw_mini(d, text, Point::new(x, y), color);
 }
 
+/// Truncate `text` so that it fits within `max_px` pixels using the mini font.
+/// Appends "..." if truncation was necessary.
+fn truncate_to_fit(text: &str, max_px: i32) -> std::borrow::Cow<'_, str> {
+    if get_mini_width(text) <= max_px {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let ellipsis = "...";
+    let ellipsis_w = get_mini_width(ellipsis);
+    let mut end = 0;
+    for (i, _) in text.char_indices() {
+        let candidate = &text[..i];
+        if get_mini_width(candidate) + ellipsis_w > max_px {
+            break;
+        }
+        end = i;
+    }
+    std::borrow::Cow::Owned(format!("{}{}", &text[..end], ellipsis))
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -204,16 +223,24 @@ pub fn show_no_match<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_
     draw_center(d, "NO MATCH", CONTENT_CY - 10, NEON_RED);
 }
 
-/// TOTP code display.
+/// TOTP code display with service label.
 ///
 /// ```text
-/// >> TOTP <<
+///    GITHUB
 ///  XXX XXX
 /// ```
-pub fn show_totp<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, code: u32) {
+pub fn show_totp<D: DrawTarget<Color = Rgb565>>(
+    d: &mut D,
+    sb: &StatusBar<'_>,
+    label: &str,
+    code: u32,
+) {
+    const LABEL_MAX_PX: i32 = W as i32 - 20;
     clear_content(d);
     update_topbar(d, sb);
-    draw_center(d, ">> TOTP <<", CONTENT_CY - 40, NEON_CYAN);
+    let label_upper = label.to_uppercase();
+    let label_fit = truncate_to_fit(&label_upper, LABEL_MAX_PX);
+    draw_mini_center(d, &label_fit, CONTENT_CY - 35, NEON_CYAN);
     let code_str = format!("{:03} {:03}", code / 1000, code % 1000);
-    draw_large_center(d, &code_str, CONTENT_CY - 5, NEON_GREEN);
+    draw_large_center(d, &code_str, CONTENT_CY - 10, NEON_GREEN);
 }
