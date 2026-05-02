@@ -122,7 +122,15 @@ fn main() -> anyhow::Result<()> {
         &uart_cfg,
     )?;
     let uart0: esp_idf_svc::hal::uart::UartDriver<'static> = unsafe { core::mem::transmute(uart0) };
-    cli::spawn(uart0, nvs.clone(), cli::Senders { enroll_tx, verify_tx, delete_tx })?;
+    cli::spawn(
+        uart0,
+        nvs.clone(),
+        cli::Senders {
+            enroll_tx,
+            verify_tx,
+            delete_tx,
+        },
+    )?;
 
     // RTC init (I2C0 on GPIO21/22)
     let config = I2cConfig::new().baudrate(Hertz(board::I2C_FREQ_HZ));

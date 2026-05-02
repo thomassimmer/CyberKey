@@ -68,7 +68,7 @@ pub fn list_usb_ports() -> Vec<String> {
 /// - `reader` — a [`BufReader`] used for line-by-line message reception.
 ///
 /// Both handles were obtained from a single `serialport::open` call via
-/// [`SerialPort::try_clone`], so they share the same OS file descriptor on
+/// [`serialport::SerialPort::try_clone`], so they share the same OS file descriptor on
 /// POSIX systems and the same `HANDLE` on Windows.
 pub struct Device {
     /// Write-only handle (sends encoded commands).
@@ -267,7 +267,7 @@ impl Device {
         result
     }
 
-    /// Inner enrollment logic, separated so the timeout restore in [`enroll`]
+    /// Inner enrollment logic, separated so the timeout restore in [`Self::enroll`]
     /// is guaranteed even on early return.
     fn enroll_inner(
         &mut self,

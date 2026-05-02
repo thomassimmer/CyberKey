@@ -424,7 +424,12 @@ impl<'d> FingerprintSensor<'d> {
         match self.driver.delete_template(page_id, count) {
             Ok(()) => true,
             Err(e) => {
-                log::warn!("fp: delete_template error slot={} count={} -> {:?}", page_id, count, e);
+                log::warn!(
+                    "fp: delete_template error slot={} count={} -> {:?}",
+                    page_id,
+                    count,
+                    e
+                );
                 false
             }
         }

@@ -107,3 +107,4 @@ jobs:
           cargo doc --no-deps --package cyberkey-core
           cargo doc --no-deps --package cyberkey-hid
           cargo doc --no-deps --package fingerprint2-rs
+          cargo doc --no-deps --package cyberkey-cli
