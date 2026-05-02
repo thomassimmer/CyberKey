@@ -126,7 +126,7 @@ The firmware crate targets Xtensa ESP32 and requires the Espressif toolchain; it
 
 | Crate | Target | Description |
 |-------|--------|-------------|
-| `crates/cyberkey-core` | `no_std` | TOTP engine (RFC 6238), config schema |
+| `crates/cyberkey-core` | `no_std` | TOTP engine (RFC 6238), BCD helpers |
 | `crates/cyberkey-hid` | `no_std` | ASCII → HID keycode table |
 | `crates/fingerprint2-rs` | `no_std` | Fingerprint2 sensor UART driver |
 | `crates/cyberkey-cli` | `std` | Desktop configuration tool |

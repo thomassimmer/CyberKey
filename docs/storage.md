@@ -53,7 +53,7 @@ All keys are in the `"ck"` namespace:
 
 NimBLE also stores bond data (LTK, IRK, CCCD) in its own NVS namespace. That namespace is separate from `"ck"` but is also cleared on factory reset via `BLEDevice::delete_all_bonds()`.
 
-There is no index or count stored — the firmware scans for `slot_0` through `slot_9` on startup and builds the in-memory `CyberKeyConfig` from what exists.
+There is no index or count stored — the firmware scans for `slot_0` through `slot_9` on demand and reads each slot directly from NVS.
 
 **Why store base32 secrets in plain text inside NVS?**
 

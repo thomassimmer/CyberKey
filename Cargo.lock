@@ -449,7 +449,6 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "cyberkey-core",
  "dialoguer",
  "serde",
  "serde_json",

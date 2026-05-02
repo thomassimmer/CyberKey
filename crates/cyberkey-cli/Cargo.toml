@@ -24,9 +24,6 @@ serde_json = "1"
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }
 
-# Shared TOTP engine and config types (no_std crate, re-enabled std on desktop)
-cyberkey-core = { path = "../cyberkey-core" }
-
 # Ergonomic error handling
 anyhow = "1"
 

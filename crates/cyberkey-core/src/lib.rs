@@ -1,4 +1,4 @@
-//! `cyberkey-core` — TOTP engine and in-memory config schema for CyberKey.
+//! `cyberkey-core` — TOTP engine and BCD helpers for CyberKey.
 //!
 //! # `no_std` design
 //!
@@ -6,15 +6,12 @@
 //! When `cargo test` runs on the host, the test harness automatically re-enables
 //! `std`, so all unit tests execute on the desktop with zero hardware required.
 //!
-//! No heap allocator is needed: all data structures are stack-allocated via
-//! [`heapless`].
+//! No heap allocator is needed: all data structures are stack-allocated.
 #![cfg_attr(not(test), no_std)]
 
 pub mod bcd;
-pub mod config;
 pub mod error;
 pub mod totp;
 
-pub use config::{CyberKeyConfig, TotpEntry};
-pub use error::{ConfigError, TotpError};
+pub use error::TotpError;
 pub use totp::generate_totp;

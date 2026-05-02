@@ -52,8 +52,8 @@ TOTP is ~40 lines of math — simple enough to implement directly on top of Rust
 ```rust
 use heapless::Vec;
 
-// Exactly 10 TOTP entries, no heap allocation
-let entries: Vec<TotpEntry, 10> = Vec::new();
+// Exactly 10 secrets, no heap allocation
+let secrets: Vec<[u8; 40], 10> = Vec::new();
 ```
 
 **Why no heap allocator?**

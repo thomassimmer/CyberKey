@@ -45,7 +45,7 @@ Host computer 1 Host computer 2 Host computer 3
 
 | Crate | Target | Description |
 |-------|--------|-------------|
-| `cyberkey-core` | `no_std` | TOTP generation (RFC 6238), config schema |
+| `cyberkey-core` | `no_std` | TOTP generation (RFC 6238), BCD helpers |
 | `fingerprint2-rs` | `no_std` | UART driver for the M5Stack Fingerprint2 sensor |
 | `cyberkey-hid` | `no_std` | ASCII → HID keycode lookup table |
 | `cyberkey-cli` | `std` binary | Desktop configuration tool |
@@ -100,7 +100,7 @@ firmware/src/
 └── fonts/           custom Orbitron bitmap fonts (mini/regular/large)
 
 crates/
-├── cyberkey-core/   TOTP + config schema
+├── cyberkey-core/   TOTP engine + BCD helpers
 ├── fingerprint2-rs/ sensor UART driver
 ├── cyberkey-hid/    ASCII → HID table
 └── cyberkey-cli/    desktop CLI binary

@@ -11,7 +11,7 @@ Cargo.toml              # Workspace root (resolver = "2")
 firmware/               # ESP32 firmware (Xtensa target, no_std + esp-idf)
   src/                  # main.rs, app.rs, ble_hid.rs, cli.rs, …
 crates/
-  cyberkey-core/        # TOTP + config schema (no_std, portable)
+  cyberkey-core/        # TOTP engine + BCD helpers (no_std, portable)
   fingerprint2-rs/      # UART driver for the fingerprint sensor (no_std, portable)
   cyberkey-hid/         # ASCII → HID keycode table (no_std, portable)
   cyberkey-cli/         # Desktop configuration binary (std)
