@@ -312,7 +312,7 @@ where
             }
             Some(ButtonEvent::BShortPress) => {
                 pending_bond_clear = false;
-                if pairing_open {
+                if pairing_open && ble_hid::PAIRING_ALLOWED.load(Ordering::Relaxed) {
                     ble_hid::close_pairing_window();
                     pairing_open = false;
                     pairing_auto_close_at = 0;
