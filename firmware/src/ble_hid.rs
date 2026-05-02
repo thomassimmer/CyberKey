@@ -160,7 +160,10 @@ pub fn init(passkey: u32) -> BleHid {
         }
     });
     server.on_disconnect(|desc, _| {
-        let count = CONNECTED.fetch_sub(1, Ordering::Relaxed) - 1;
+        let count = CONNECTED
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some(v.saturating_sub(1)))
+            .unwrap_or(0)
+            .saturating_sub(1);
         log::info!(
             "[BLE] disconnected: {:?} (total: {})",
             desc.address(),
@@ -191,7 +194,9 @@ pub fn init(passkey: u32) -> BleHid {
         if notifying {
             SUBSCRIBED.fetch_add(1, Ordering::Relaxed);
         } else {
-            SUBSCRIBED.fetch_sub(1, Ordering::Relaxed);
+            SUBSCRIBED
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some(v.saturating_sub(1)))
+                .ok();
         }
     });
 
@@ -263,13 +268,17 @@ pub fn start_background_sync() {
 fn start_advertising() {
     let device = BLEDevice::take();
     let mut adv = device.get_advertising().lock();
-    let _ = adv.set_data(
+    if let Err(e) = adv.set_data(
         BLEAdvertisementData::new()
             .name("CyberKey")
             .appearance(0x03C1)
             .add_service_uuid(BleUuid::Uuid16(0x1812)),
-    );
-    let _ = adv.start();
+    ) {
+        log::error!("[BLE] set_data failed: {:?}", e);
+    }
+    if let Err(e) = adv.start() {
+        log::error!("[BLE] adv.start() failed: {:?}", e);
+    }
 }
 
 /// Close the pairing window: stop advertising and clear PAIRING_ALLOWED.

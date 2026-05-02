@@ -33,7 +33,7 @@ where
     log::info!("Factory reset: fingerprint templates cleared");
     {
         let mut guard = config_store::lock_nvs(nvs);
-        for slot in 0u32..10 {
+        for slot in 0u8..10 {
             let _ = guard.0.remove(&format!("slot_{slot}"));
             let _ = guard.0.remove(&format!("label_{slot}"));
         }
@@ -60,7 +60,6 @@ fn check_boot_factory_reset<D, A, B, C>(
     B: InputPin,
     C: InputPin,
 {
-    const POLL_MS: u32 = 20;
     const HOLD_MS: u128 = 2_000;
 
     let start = std::time::Instant::now();

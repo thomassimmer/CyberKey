@@ -30,7 +30,7 @@ pub use crate::config_store::SharedNvs;
 /// Sent from the CLI task to the main loop to kick off a fingerprint enrollment.
 pub struct EnrollRequest {
     /// Fingerprint sensor slot to enroll into.
-    pub slot: u16,
+    pub slot: u8,
     /// Channel for the main loop to stream progress events back to the CLI task.
     pub reply: mpsc::SyncSender<EnrollResp>,
 }
@@ -58,7 +58,7 @@ pub type EnrollSender = mpsc::SyncSender<EnrollRequest>;
 /// Sent from the CLI task to instruct the main loop to delete a fingerprint slot.
 pub struct DeleteRequest {
     /// Fingerprint sensor slot to delete.
-    pub slot: u16,
+    pub slot: u8,
     /// Channel for the main loop to confirm deletion success.
     pub reply: mpsc::SyncSender<bool>,
 }
@@ -245,7 +245,7 @@ fn write_event(uart: &UartDriver<'static>, event: &EnrollEvent) {
 fn has_any_entries(nvs: &Arc<Mutex<SharedNvs>>) -> bool {
     let guard = lock_nvs(nvs);
     let mut buf = [0u8; 65];
-    (0u32..10).any(|s| matches!(guard.0.get_str(&format!("slot_{s}"), &mut buf), Ok(Some(_))))
+    (0u8..10).any(|s| matches!(guard.0.get_str(&format!("slot_{s}"), &mut buf), Ok(Some(_))))
 }
 
 /// Top-level command router.  `add_entry` is handled specially because it
@@ -380,10 +380,10 @@ fn cmd_add_entry(
     };
 
     // Find the first free slot (0–9) and write secret + label to NVS.
-    let slot: u32 = {
+    let slot: u8 = {
         let mut guard = lock_nvs(nvs);
         let mut probe = [0u8; 65];
-        let free = (0u32..10).find(|&s| {
+        let free = (0u8..10).find(|&s| {
             !matches!(
                 guard.0.get_str(&format!("slot_{s}"), &mut probe),
                 Ok(Some(_))
@@ -404,10 +404,7 @@ fn cmd_add_entry(
 
     // Hand the enrollment request to the main loop.
     let (tx, rx) = mpsc::sync_channel(16);
-    let _ = enroll_tx.send(EnrollRequest {
-        slot: slot as u16,
-        reply: tx,
-    });
+    let _ = enroll_tx.send(EnrollRequest { slot, reply: tx });
 
     // Stream enrollment progress events over serial until done or failed.
     loop {
@@ -435,7 +432,7 @@ fn cmd_add_entry(
                 );
             }
             Ok(EnrollResp::Done) => {
-                write_resp(uart, &Resp::ok_slot(slot as u8));
+                write_resp(uart, &Resp::ok_slot(slot));
                 break;
             }
             Ok(EnrollResp::DuplicateFinger) => {
@@ -463,18 +460,14 @@ fn cmd_list_entries(nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
     let mut entries = Vec::new();
     let mut secret_buf = [0u8; 65];
     let mut label_buf = [0u8; 257];
-    for slot in 0u32..10 {
+    for slot in 0u8..10 {
         if let Ok(Some(secret)) = guard.0.get_str(&format!("slot_{slot}"), &mut secret_buf) {
             let label = match guard.0.get_str(&format!("label_{slot}"), &mut label_buf) {
                 Ok(Some(l)) => l.to_string(),
                 _ => format!("slot {slot}"),
             };
             let secret_masked = "*".repeat(secret.len());
-            entries.push(SlotEntry {
-                slot: slot as u8,
-                label,
-                secret_masked,
-            });
+            entries.push(SlotEntry { slot, label, secret_masked });
         }
     }
     Resp {
@@ -494,7 +487,7 @@ fn cmd_remove_entry(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>, delete_tx: &DeleteSe
     let slot = {
         let guard = lock_nvs(nvs);
         let mut label_buf = [0u8; 257];
-        let found = (0u32..10).find(|&slot| {
+        let found = (0u8..10).find(|&slot| {
             matches!(
                 guard.0.get_str(&format!("label_{slot}"), &mut label_buf),
                 Ok(Some(s)) if s == label
@@ -508,10 +501,7 @@ fn cmd_remove_entry(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>, delete_tx: &DeleteSe
 
     let (tx, rx) = mpsc::sync_channel(1);
     if delete_tx
-        .send(DeleteRequest {
-            slot: slot as u16,
-            reply: tx,
-        })
+        .send(DeleteRequest { slot, reply: tx })
         .is_err()
     {
         return Resp::err("delete channel closed");

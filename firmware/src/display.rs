@@ -201,7 +201,7 @@ pub fn show_status_2line<D: DrawTarget<Color = Rgb565>>(
 }
 
 /// Successful enrollment.
-pub fn show_enroll_ok<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, slot: u16) {
+pub fn show_enroll_ok<D: DrawTarget<Color = Rgb565>>(d: &mut D, sb: &StatusBar<'_>, slot: u8) {
     clear_content(d);
     update_topbar(d, sb);
     draw_center(d, "ENROLLED", CONTENT_CY - 20, NEON_GREEN);

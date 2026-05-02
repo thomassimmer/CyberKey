@@ -118,7 +118,7 @@ enum ManualEnrollPhase {
 /// State held for the duration of an enrollment session.
 struct EnrollSession {
     /// Target slot in the sensor's flash library (0–9).
-    slot: u16,
+    slot: u8,
     /// Total number of capture passes requested (typically 3).
     passes: u8,
     /// Current pass index, 1-based.
@@ -217,7 +217,7 @@ impl<'d> FingerprintSensor<'d> {
     /// Returns `false` if the sensor is not ready. On success, drive the session by
     /// calling [`poll_enroll_ack`](Self::poll_enroll_ack) in a loop until `Done`,
     /// `DuplicateFinger`, or `Failed` is returned.
-    pub fn begin_enroll(&mut self, slot: u16, passes: u8) -> bool {
+    pub fn begin_enroll(&mut self, slot: u8, passes: u8) -> bool {
         if !self.ready {
             return false;
         }
@@ -309,7 +309,7 @@ impl<'d> FingerprintSensor<'d> {
                         // detect duplicates before committing to the enrollment sequence.
                         if pass == 1 {
                             match self.driver.search(1, 0, LIBRARY_SIZE) {
-                                Ok((matched_slot, score)) if matched_slot != session.slot => {
+                                Ok((matched_slot, score)) if matched_slot != session.slot as u16 => {
                                     log::info!(
                                         "enroll: duplicate detected — finger already at slot={} score={}",
                                         matched_slot, score
@@ -381,7 +381,7 @@ impl<'d> FingerprintSensor<'d> {
                     return EnrollAck::Failed;
                 }
 
-                if let Err(e) = self.driver.store_char(1, slot) {
+                if let Err(e) = self.driver.store_char(1, slot as u16) {
                     log::warn!("enroll: store_char error: {:?}", e);
                     self.enroll_session = None;
                     return EnrollAck::Failed;
@@ -417,11 +417,11 @@ impl<'d> FingerprintSensor<'d> {
     ///
     /// Returns `true` on success.
     /// NOTE: Does NOT call reactivate_sensor() — assumes the sensor is already awake.
-    pub fn delete_template(&mut self, page_id: u16, count: u16) -> bool {
+    pub fn delete_template(&mut self, page_id: u8, count: u16) -> bool {
         if !self.ready {
             return false;
         }
-        match self.driver.delete_template(page_id, count) {
+        match self.driver.delete_template(page_id as u16, count) {
             Ok(()) => true,
             Err(e) => {
                 log::warn!(
