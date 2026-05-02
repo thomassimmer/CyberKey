@@ -467,7 +467,11 @@ fn cmd_list_entries(nvs: &Arc<Mutex<SharedNvs>>) -> Resp {
                 _ => format!("slot {slot}"),
             };
             let secret_masked = "*".repeat(secret.len());
-            entries.push(SlotEntry { slot, label, secret_masked });
+            entries.push(SlotEntry {
+                slot,
+                label,
+                secret_masked,
+            });
         }
     }
     Resp {
@@ -500,10 +504,7 @@ fn cmd_remove_entry(cmd: &Cmd, nvs: &Arc<Mutex<SharedNvs>>, delete_tx: &DeleteSe
     };
 
     let (tx, rx) = mpsc::sync_channel(1);
-    if delete_tx
-        .send(DeleteRequest { slot, reply: tx })
-        .is_err()
-    {
+    if delete_tx.send(DeleteRequest { slot, reply: tx }).is_err() {
         return Resp::err("delete channel closed");
     }
     match rx.recv() {

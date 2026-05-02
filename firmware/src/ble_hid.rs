@@ -161,7 +161,9 @@ pub fn init(passkey: u32) -> BleHid {
     });
     server.on_disconnect(|desc, _| {
         let count = CONNECTED
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some(v.saturating_sub(1)))
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(1))
+            })
             .unwrap_or(0)
             .saturating_sub(1);
         log::info!(
@@ -195,7 +197,9 @@ pub fn init(passkey: u32) -> BleHid {
             SUBSCRIBED.fetch_add(1, Ordering::Relaxed);
         } else {
             SUBSCRIBED
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some(v.saturating_sub(1)))
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                    Some(v.saturating_sub(1))
+                })
                 .ok();
         }
     });

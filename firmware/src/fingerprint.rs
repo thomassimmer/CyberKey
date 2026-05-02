@@ -309,7 +309,9 @@ impl<'d> FingerprintSensor<'d> {
                         // detect duplicates before committing to the enrollment sequence.
                         if pass == 1 {
                             match self.driver.search(1, 0, LIBRARY_SIZE) {
-                                Ok((matched_slot, score)) if matched_slot != session.slot as u16 => {
+                                Ok((matched_slot, score))
+                                    if matched_slot != session.slot as u16 =>
+                                {
                                     log::info!(
                                         "enroll: duplicate detected — finger already at slot={} score={}",
                                         matched_slot, score
