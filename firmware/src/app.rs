@@ -448,8 +448,10 @@ where
                 }
                 match fp.poll() {
                     Some(fingerprint::IdentifyResult::Match(_)) => break true,
-                    Some(fingerprint::IdentifyResult::NoMatch) => break false,
-                    None => FreeRtos::delay_ms(POLL_MS),
+                    // NoMatch = wrong finger, not a lockout — allow retry within the window.
+                    Some(fingerprint::IdentifyResult::NoMatch) | None => {
+                        FreeRtos::delay_ms(POLL_MS)
+                    }
                 }
             };
             let _ = request.reply.send(matched);

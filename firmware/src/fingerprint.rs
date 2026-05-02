@@ -124,6 +124,11 @@ struct EnrollSession {
     /// Current pass index, 1-based.
     current_pass: u8,
     phase: ManualEnrollPhase,
+    /// Deadline for retrying SensorError(1) in WaitingForFinger — sensor may need
+    /// time to settle after a mode switch or smart-poll sequence.
+    /// Set at session creation so the budget is measured from begin_enroll, not
+    /// from the first failure (each get_enroll_image() call can itself block ~5s).
+    imaging_fail_deadline: std::time::Instant,
 }
 
 impl EnrollSession {
@@ -221,13 +226,20 @@ impl<'d> FingerprintSensor<'d> {
         if !self.ready {
             return false;
         }
-        self.reactivate_sensor("begin_enroll");
+        // Use set_work_mode(1) rather than activate() — activate() is a cold-boot
+        // command that can briefly destabilise the sensor if called while already
+        // active. Either way the sensor may return SensorError(1) for a few cycles
+        // after the mode switch; poll_enroll_ack() retries through those.
+        self.driver.drain_rx();
+        let _ = self.driver.set_work_mode(1);
+        FreeRtos::delay_ms(100);
         log::info!("begin_enroll slot={} passes={}", slot, passes);
         self.enroll_session = Some(EnrollSession {
             slot,
             passes,
             current_pass: 1,
             phase: ManualEnrollPhase::WaitingForFinger { announced: false },
+            imaging_fail_deadline: std::time::Instant::now() + std::time::Duration::from_secs(6),
         });
         true
     }
@@ -280,6 +292,23 @@ impl<'d> FingerprintSensor<'d> {
                         );
                         self.enroll_session = None;
                         EnrollAck::Failed
+                    }
+
+                    // SensorError(1) = "imaging fail" — transient; the sensor may still
+                    // be settling after a mode switch or prior smart-poll sequence.
+                    // Retry until the session deadline (6 s from begin_enroll) since
+                    // get_enroll_image() can itself block for several seconds per call.
+                    Err(FingerprintError::SensorError(1)) => {
+                        if std::time::Instant::now() > session.imaging_fail_deadline {
+                            log::warn!(
+                                "enroll: SensorError(1) persists on pass {} — aborting",
+                                session.current_pass
+                            );
+                            self.enroll_session = None;
+                            EnrollAck::Failed
+                        } else {
+                            EnrollAck::Pending
+                        }
                     }
 
                     // Any other sensor error — abort.
