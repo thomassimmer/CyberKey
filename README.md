@@ -1,5 +1,7 @@
 # CyberKey
 
+[![CI](https://github.com/thomassimmer/cyberkey/actions/workflows/ci.yml/badge.svg)](https://github.com/thomassimmer/cyberkey/actions/workflows/ci.yml)
+
 Touch an enrolled finger. A TOTP code is typed into the focused field over Bluetooth — no phone, no app, no copy-paste.
 
 Built on the **M5StickC Plus 2** (ESP32). Pairs with macOS, Windows, and Linux as a standard BLE HID keyboard.
@@ -39,7 +41,7 @@ Configuration (enrollment, clock sync, bond management) happens over USB-C seria
 | Action | Button | Effect |
 |--------|--------|--------|
 | **Wake Up** | Any button | Turns on the screen and activates the sensor. |
-| **TOTP** | Sensor | Place an enrolled finger to type the 6-digit code. |
+| **TOTP** | Sensor | Place an enrolled finger — the service label and 6-digit code appear on the display, then the code is typed via BLE. |
 | **Pairing** | **Button B** (short) | Toggle the BLE pairing window (displays the PIN). |
 | **Clear Bonds** | **Button A** (1.5s) | Resets all Bluetooth pairings (hold again to confirm). |
 | **Power Off** | **Button C** (1.5s) | Shuts down the device. |
@@ -47,7 +49,7 @@ Configuration (enrollment, clock sync, bond management) happens over USB-C seria
 ### Recovery (at Boot)
 | Action | Button | Effect |
 |--------|--------|--------|
-| **Factory Reset** | **Button A** (hold 5s) | Erases all fingerprints and stored secrets. |
+| **Factory Reset** | **Button A** (hold 2s, press again within 10s) | Erases all fingerprints and stored secrets. |
 
 ---
 
@@ -131,3 +133,25 @@ The firmware crate targets Xtensa ESP32 and requires the Espressif toolchain; it
 | `firmware` | ESP32 only | Hardware integration, BLE, main loop |
 
 Architecture and design decisions: [ARCHITECTURE.md](ARCHITECTURE.md)
+
+---
+
+## References & Inspirations
+
+**Cyberpunk 2077** is the primary aesthetic inspiration. CyberKey is a first attempt at making real the kind of cyberware gadgets from the game — a physical device that does something that still feels futuristic. This project was born from the desire to learn embedded systems by building something useful that doesn't exist yet.
+
+### Prior art & reference code
+
+- **[AirHound](https://github.com/dougborg/AirHound)** — A Rust `no_std` + ESP32 project with the same architectural pattern: a portable detection library tested on a laptop, wired to hardware in a thin firmware crate. A reference for what a well-structured ESP32/Rust workspace looks like.
+
+- **[M5Unified](https://github.com/m5stack/M5Unified)** — M5Stack's official C++ hardware abstraction library. Used as the reference for GPIO maps, peripheral initialization order, and battery ADC calibration formula.
+
+- **[M5Unit-Fingerprint2](https://github.com/m5stack/M5Unit-Fingerprint2)** — M5Stack's official Arduino driver for the Fingerprint2 sensor. Source of the UART packet protocol implemented from scratch in [`fingerprint2-rs`](crates/fingerprint2-rs/).
+
+- **[Export Google Authenticator OTP keys](https://gist.github.com/mapster/4b8b9f8f6b92cc1ca58ae5506e0508f7)** — Script for extracting base32 TOTP secrets from Google Authenticator. Useful for migrating existing 2FA accounts to CyberKey.
+
+### My own earlier experiments on this hardware
+
+- **[m5stickc-plus-2-hello-world](https://github.com/thomassimmer/m5stickc-plus-2-hello-world)** — First exploration of the M5StickC Plus 2 in Rust, comparing bare-metal `esp-hal` vs `esp-idf-svc`. Led to the choice of ESP-IDF for CyberKey (NVS, FreeRTOS, NimBLE).
+
+- **[m5stickc-plus-2-bluetooth-macos](https://github.com/thomassimmer/m5stickc-plus-2-bluetooth-macos)** — The prototype that cracked macOS BLE HID pairing. Documents why the pure-Rust `trouble-host` stack failed and why switching to NimBLE via `esp32-nimble` was the fix. Became the foundation for CyberKey's BLE layer.

@@ -15,7 +15,7 @@ Everything else — display, RTC, battery, buttons — is integrated on the M5St
 | UART0 (USB-C) | RX | 3 | |
 | UART1 (Grove) | TX | 32 | Fingerprint sensor |
 | UART1 (Grove) | RX | 33 | |
-| SPI2 display | CLK | 13 | ST7789V2, 40 MHz |
+| SPI2 display | CLK | 13 | ST7789V2, 20 MHz |
 | SPI2 display | MOSI | 15 | |
 | SPI2 display | CS | 5 | |
 | Display | DC | 14 | data/command select |

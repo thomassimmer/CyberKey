@@ -69,15 +69,15 @@ Sets the BM8563 RTC to the given Unix timestamp and stores the UTC offset in NVS
 
 ```json
 → {"cmd":"list_entries"}
-← {"ok":true,"entries":[{"slot":0,"label":"GitHub","secret":"JBSWY3D..."},{"slot":1,"label":"AWS","secret":"AAAA..."}]}
+← {"ok":true,"entries":[{"slot":0,"label":"GitHub","secret_masked":"JBSW********************"},{"slot":1,"label":"AWS","secret_masked":"AAAA********************"}]}
 ```
 
-Secrets are truncated/masked in the response for display. The firmware never sends the full secret over the wire.
+Secrets are fully masked in the response — the `secret_masked` field contains only `*` characters. The firmware never sends the plaintext secret over the wire.
 
 ### `add_entry`
 
 ```json
-→ {"cmd":"add_entry","label":"GitHub","secret":"JBSWY3DPEHPK3PXP"}
+→ {"cmd":"add_entry","label":"GitHub","secret_b32":"JBSWY3DPEHPK3PXP"}
 ```
 
 This command initiates fingerprint enrollment. The firmware streams enrollment progress events before the final response:
@@ -114,11 +114,11 @@ The CLI detects `"duplicate_finger"` by string match on the error field and show
 ### `remove_entry`
 
 ```json
-→ {"cmd":"remove_entry","slot":0}
+→ {"cmd":"remove_entry","label":"GitHub"}
 ← {"ok":true}
 ```
 
-Deletes the NVS entry for slot N and then removes the fingerprint template from the sensor. If the device loses power between these two steps, the NVS entry is gone but the sensor template persists as an orphan. The device treats the slot as empty (the sensor template is unreachable). Recovery: factory reset.
+Removes an entry by its service label (case-sensitive). The firmware looks up the slot for that label, deletes the NVS entry first (`slot_N` + `label_N`), then removes the fingerprint template from the sensor. If the device loses power between these two steps, the NVS entry is gone but the sensor template persists as an orphan. The device treats the slot as empty (the sensor template is unreachable). Recovery: factory reset.
 
 ### `factory_reset`
 
@@ -147,22 +147,26 @@ The device reboots in an unconfigured state. The BLE pairing window opens automa
 ← {"ok":true}
 ```
 
-Opens the BLE pairing window for 60 seconds. The new passkey is displayed on the LCD. Equivalent to a Button B long-press.
+Opens the BLE pairing window for 60 seconds. The new passkey is displayed on the LCD. Equivalent to a Button B short-press.
 
 ---
 
 ## Session Authentication
 
-The CLI interface is gated behind fingerprint authentication:
+The CLI interface is gated behind fingerprint authentication once at least one entry is enrolled. A fresh device with no entries is open (bootstrap mode).
 
-1. On first command (other than `ping` and `sync_clock`), the firmware prompts for `unlock`.
-2. `unlock` triggers fingerprint identification. The firmware waits up to 30 seconds for a match.
-3. On match, a 5-minute session is started. All commands within the session are accepted.
-4. On session timeout, the next command requires re-authentication.
+**Authentication flow:**
+
+1. The CLI sends `{"cmd":"unlock"}` explicitly before any protected command.
+2. The firmware triggers fingerprint identification on the device (up to 30 seconds).
+3. On match, a 5-minute session is started. All subsequent commands are accepted without re-authentication.
+4. On session timeout, the next protected command returns `{"ok":false,"error":"cli_locked: send {\"cmd\":\"unlock\"} then place finger"}`.
+
+If a protected command is sent without a prior `unlock`, the firmware returns the same `cli_locked` error immediately without attempting a scan.
 
 This prevents a USB-connected malicious host from exfiltrating TOTP secrets without physical access to the enrolled fingers.
 
-**Note**: `sync_clock` and `ping` bypass authentication. Clock sync is needed before TOTP is valid, and a time-of-check/time-of-use gap between authentication and clock sync would be confusing to handle.
+**Note**: `sync_clock` and `ping` bypass authentication. Clock sync is needed before TOTP is valid, and requiring authentication before clock sync would prevent the device from working correctly on first connect.
 
 ---
 

@@ -119,7 +119,7 @@ cargo run --release   # builds, flashes, and opens serial monitor
 **Fingerprint + TOTP:**
 - [ ] CLI: add an entry (`add_entry`, label = "Test", secret = valid base32)
 - [ ] Complete 3-step enrollment on device
-- [ ] Place enrolled finger on sensor → TOTP code appears in focused text field
+- [ ] Place enrolled finger on sensor → service label and TOTP code appear on the display, code is typed into the focused text field
 - [ ] Place wrong finger → red LED flash, no typing
 
 **CLI:**

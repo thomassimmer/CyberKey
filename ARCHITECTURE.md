@@ -67,6 +67,7 @@ The `no_std` split is intentional: all logic that can be tested on a laptop shou
 | Light sleep, not deep sleep | UART wakeup (simpler than GPIO edge wakeup) | [docs/hardware.md](docs/hardware.md) |
 | JSON over serial | Human-readable, debuggable with any terminal | [docs/cli-protocol.md](docs/cli-protocol.md) |
 | Numpad keycodes for digits | Layout-independent (works on AZERTY/QWERTY) | [docs/totp.md](docs/totp.md) |
+| Custom proportional Orbitron font | Cyberpunk aesthetic; proportional spacing vs. `embedded-graphics` fixed grid | [docs/custom-font.md](docs/custom-font.md) |
 
 ---
 
@@ -78,6 +79,7 @@ The `no_std` split is intentional: all logic that can be tested on a laptop shou
 - **[docs/totp.md](docs/totp.md)** — RFC 6238 implementation, `no_std` choices, clock sync, HID keycode mapping
 - **[docs/cli-protocol.md](docs/cli-protocol.md)** — JSON wire protocol, command reference, enrollment flow, session auth
 - **[docs/testing.md](docs/testing.md)** — Test strategy, portable vs. hardware tests
+- **[docs/custom-font.md](docs/custom-font.md)** — How to convert a TTF font to Rust bitmap tables for the ST7789V2 display
 
 ---
 
@@ -93,7 +95,9 @@ firmware/src/
 ├── display.rs       ST7789V2 drawing helpers
 ├── config_store.rs  NVS read/write
 ├── rtc.rs           BM8563 time sync
-└── buttons.rs       polling-based button events
+├── buttons.rs       polling-based button events
+├── board.rs         board-level constants (GPIO map, SPI MHz, ADC calibration)
+└── fonts/           custom Orbitron bitmap fonts (mini/regular/large)
 
 crates/
 ├── cyberkey-core/   TOTP + config schema
