@@ -6,7 +6,15 @@ Touch an enrolled finger. A TOTP code is typed into the focused field over Bluet
 
 Built on the **M5StickC Plus 2** (ESP32). Pairs with macOS, Windows, and Linux as a standard BLE HID keyboard.
 
-<!-- demo gif here -->
+## Demo
+
+[![Watch the demo](https://img.youtube.com/vi/Q93ilcUGO0s/maxresdefault.jpg)](https://youtu.be/Q93ilcUGO0s)
+
+<p align="center">
+<img clear="left" height="400" src="docs/init_screen.png" alt="CyberKey boot screen on the M5StickC Plus 2">
+<img clear="right" height="400" src="docs/totp_demo.png" alt="TOTP code typed automatically into a password field">
+</p>
+
 
 ---
 
@@ -62,7 +70,6 @@ Configuration (enrollment, clock sync, bond management) happens over USB-C seria
 
 The sensor connects to the M5StickC Plus 2 Grove port (UART, no soldering).
 
-<!-- hardware photo here -->
 
 ---
 
