@@ -1,6 +1,7 @@
 # CyberKey
 
 [![CI](https://github.com/thomassimmer/cyberkey/actions/workflows/ci.yml/badge.svg)](https://github.com/thomassimmer/cyberkey/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Touch an enrolled finger. A TOTP code is typed into the focused field over Bluetooth — no phone, no app, no copy-paste.
 
@@ -164,3 +165,9 @@ Architecture and design decisions: [ARCHITECTURE.md](ARCHITECTURE.md)
 - **[m5stickc-plus-2-hello-world](https://github.com/thomassimmer/m5stickc-plus-2-hello-world)** — First exploration of the M5StickC Plus 2 in Rust, comparing bare-metal `esp-hal` vs `esp-idf-svc`. Led to the choice of ESP-IDF for CyberKey (NVS, FreeRTOS, NimBLE).
 
 - **[m5stickc-plus-2-bluetooth-macos](https://github.com/thomassimmer/m5stickc-plus-2-bluetooth-macos)** — The prototype that cracked macOS BLE HID pairing. Documents why the pure-Rust `trouble-host` stack failed and why switching to NimBLE via `esp32-nimble` was the fix. Became the foundation for CyberKey's BLE layer.
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
