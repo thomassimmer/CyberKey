@@ -22,3 +22,10 @@ CONFIG_PM_DFS_INIT_AUTO=y
 # sleep clock.  Without this, any active BLE connection blocks light sleep
 # entirely, making CONFIG_PM_ENABLE effectively a no-op while connected.
 CONFIG_BT_NIMBLE_RUN_BLE_ON_SUSPEND=y
+
+# BLE controller modem sleep: the radio powers down between connection events
+# instead of staying active.  ORIG mode uses an internal RC oscillator for
+# wakeup timing, which requires no external crystal and is suitable for the
+# M5StickC Plus 2 hardware.  This can save 10-20 mA while BLE is connected.
+CONFIG_BT_CTRL_MODEM_SLEEP=y
+CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y

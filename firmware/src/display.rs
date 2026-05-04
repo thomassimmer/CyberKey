@@ -244,3 +244,11 @@ pub fn show_totp<D: DrawTarget<Color = Rgb565>>(
     let code_str = format!("{:03} {:03}", code / 1000, code % 1000);
     draw_large_center(d, &code_str, CONTENT_CY - 10, NEON_GREEN);
 }
+
+/// Controls display controller power (SLPIN / SLPOUT).
+///
+/// Implemented by the concrete display type in `main.rs`.
+/// `set_sleep_mode(true)` sends SLPIN; `set_sleep_mode(false)` sends SLPOUT and waits for the panel to wake.
+pub trait DisplayPower {
+    fn set_sleep_mode(&mut self, sleeping: bool);
+}

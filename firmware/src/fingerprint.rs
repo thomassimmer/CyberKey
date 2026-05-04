@@ -492,6 +492,8 @@ impl<'d> FingerprintSensor<'d> {
         self.smart_poll_until = None;
 
         self.driver.drain_rx();
+        // Turn off the LED ring before sleeping to avoid unnecessary current draw.
+        let _ = self.driver.set_led(LedMode::Off, LedColor::Off, 0);
         let _ = self.driver.set_work_mode(0); // 0 = Timed Sleep
         let _ = self.driver.set_sleep_time(10);
     }

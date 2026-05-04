@@ -43,6 +43,26 @@ mod fingerprint;
 mod fonts;
 mod rtc;
 
+// Implement DisplayPower for any mipidsi::Display so app::run can send SLPIN/SLPOUT.
+// DI: mipidsi's internal Interface trait (implemented by SpiInterface).
+// M:  any Model (ST7789, ILI9341, …).
+// RST: OutputPin — mipidsi::NoPin satisfies this when no reset pin is wired to the driver.
+impl<DI, M, RST> display::DisplayPower for mipidsi::Display<DI, M, RST>
+where
+    DI: mipidsi::interface::Interface,
+    M: mipidsi::models::Model,
+    RST: embedded_hal::digital::OutputPin,
+{
+    fn set_sleep_mode(&mut self, sleeping: bool) {
+        let mut delay = esp_idf_svc::hal::delay::Delay::new_default();
+        if sleeping {
+            let _ = self.sleep(&mut delay);
+        } else {
+            let _ = self.wake(&mut delay);
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();

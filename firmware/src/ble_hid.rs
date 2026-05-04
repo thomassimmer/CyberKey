@@ -147,13 +147,20 @@ pub fn init(passkey: u32) -> BleHid {
     // NOTE: do NOT reset SUBSCRIBED in on_connect.  On reconnection with a stored
     // bond, macOS writes the CCCD (re-enabling notifications) *before* the GAP
     // connect event fires — resetting here would erase that subscription.
-    server.on_connect(|_, desc| {
+    server.on_connect(|server, desc| {
         let count = CONNECTED.fetch_add(1, Ordering::Relaxed) + 1;
         log::info!(
             "[BLE] link connected: {:?} (total: {})",
             desc.address(),
             count
         );
+        // Request a longer connection interval to reduce BLE radio wakeup frequency.
+        // min=100 ms (80×1.25 ms), max=200 ms (160×1.25 ms), latency=4 (skip up to 4 events
+        // when idle, giving an effective max wakeup period of 200×5 = 1000 ms), supervision
+        // timeout=4 s. The host OS may negotiate different values but this signals intent.
+        if let Err(e) = server.update_conn_params(desc.conn_handle(), 80, 160, 4, 400) {
+            log::warn!("[BLE] conn param update failed: {:?}", e);
+        }
         // If the pairing window is still open and we have slots, keep/restart advertising.
         if PAIRING_ALLOWED.load(Ordering::Relaxed) && count < 3 {
             let _ = BLEDevice::take().get_advertising().lock().start();
