@@ -185,6 +185,11 @@ where
     let mut last_minute: u8 = 255; // force topbar draw on first iteration
     let mut tick: u32 = 0;
 
+    // Standby diagnostics — log battery drain rate + PM locks every 60 s while screen is off.
+    let mut last_diag_us: i64 = 0;
+    let mut diag_bat_at_screen_off: Option<u8> = None;
+    let mut diag_ts_at_screen_off: u64 = 0;
+
     const SCREEN_TIMEOUT_TICKS: u32 = 750; // 15 s at POLL_MS/tick
     const IDLE_POLL_MS: u32 = 100; // sleep interval when screen is off
     let mut inactivity_ticks: u32 = 0;
@@ -542,6 +547,78 @@ where
             backlight.set_low().ok();
             screen_on = false;
             fp.standby();
+            // Capture the battery level and timestamp at the moment of screen-off so we can
+            // compute a cumulative average-mA figure later.
+            battery = read_battery();
+            last_battery_tick = tick;
+            diag_bat_at_screen_off = battery;
+            diag_ts_at_screen_off =
+                unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64;
+            last_diag_us = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+            log::info!(
+                "[DIAG] screen off — bat={:?}% connected={} pairing={}",
+                battery,
+                connected,
+                pairing_open
+            );
+        }
+
+        // Standby diagnostics: every 60 s while screen is off, log the average current drain
+        // (computed from battery % drop × 200 mAh) and dump all active PM locks so we can
+        // identify what is preventing light sleep.  Requires CONFIG_PM_PROFILING=y.
+        if !screen_on {
+            let now_us = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+            if now_us - last_diag_us >= 60_000_000 {
+                last_diag_us = now_us;
+                battery = read_battery();
+                last_battery_tick = tick;
+                let uptime_s = now_us / 1_000_000;
+                let now_ts =
+                    unsafe { esp_idf_svc::sys::time(std::ptr::null_mut()) } as u64;
+                match (diag_bat_at_screen_off, battery) {
+                    (Some(bat_off), Some(bat_now))
+                        if diag_ts_at_screen_off > 0 && now_ts > diag_ts_at_screen_off =>
+                    {
+                        let elapsed_s = now_ts - diag_ts_at_screen_off;
+                        let drop = bat_off.saturating_sub(bat_now) as u64;
+                        // mA = (200 mAh × drop/100) / (elapsed_s/3600)
+                        //    = 7200 × drop / elapsed_s
+                        // Multiply by 10 for one decimal place of precision.
+                        let ma_x10 = if elapsed_s > 0 {
+                            72_000 * drop / elapsed_s
+                        } else {
+                            0
+                        };
+                        log::info!(
+                            "[DIAG] standby t={}s bat={}% (was {}% {}s ago → {}.{}mA) \
+                             connected={} pairing={}",
+                            uptime_s,
+                            bat_now,
+                            bat_off,
+                            elapsed_s,
+                            ma_x10 / 10,
+                            ma_x10 % 10,
+                            connected,
+                            pairing_open
+                        );
+                    }
+                    _ => {
+                        log::info!(
+                            "[DIAG] standby t={}s bat={:?} connected={} pairing={}",
+                            uptime_s,
+                            battery,
+                            connected,
+                            pairing_open
+                        );
+                    }
+                }
+                // Dump the PM lock table.  Output goes to UART0 (USB-C serial) via the log
+                // subsystem.  Look for lines like "APB_FREQ_MAX  HELD  bt_controller"  which
+                // reveal which drivers are preventing light sleep.
+                unsafe {
+                    esp_idf_svc::sys::esp_pm_dump_locks(core::ptr::null_mut());
+                }
+            }
         }
 
         FreeRtos::delay_ms(if screen_on { POLL_MS } else { IDLE_POLL_MS });

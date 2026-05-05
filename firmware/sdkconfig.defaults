@@ -29,3 +29,7 @@ CONFIG_BT_NIMBLE_RUN_BLE_ON_SUSPEND=y
 # M5StickC Plus 2 hardware.  This can save 10-20 mA while BLE is connected.
 CONFIG_BT_CTRL_MODEM_SLEEP=y
 CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y
+
+# PM profiling: enables esp_pm_dump_locks() which logs every active PM lock.
+# Use this to identify what is preventing light sleep.
+CONFIG_PM_PROFILING=y
