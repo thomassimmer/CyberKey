@@ -101,19 +101,14 @@ fn check_boot_factory_reset<D, A, B, C>(
 ///
 /// Centralises the repeated "ensure screen is on" pattern used throughout the
 /// main event loop (button press, BLE event, fingerprint result, CLI request…).
-fn wake_screen_if_off<D, BL: OutputPin>(
+fn wake_screen_if_off<BL: OutputPin>(
     screen_on: &mut bool,
     inactivity_ticks: &mut u32,
     backlight: &mut PinDriver<'_, BL, Output>,
     fp: &mut fingerprint::FingerprintSensor<'_>,
-    disp: &mut D,
-) where
-    D: display::DisplayPower,
-{
+) {
     *inactivity_ticks = 0;
     if !*screen_on {
-        // Wake the display controller before turning on the backlight.
-        disp.set_sleep_mode(false);
         backlight.set_high().ok();
         *screen_on = true;
     }
@@ -174,8 +169,7 @@ pub fn run<D, A, B, C, P, BL, F>(
     read_battery: &mut F,
 ) -> anyhow::Result<()>
 where
-    D: embedded_graphics::draw_target::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>
-        + display::DisplayPower,
+    D: embedded_graphics::draw_target::DrawTarget<Color = embedded_graphics::pixelcolor::Rgb565>,
     A: InputPin,
     B: InputPin,
     C: InputPin,
@@ -297,13 +291,13 @@ where
         // CLI allow_pairing: generate a fresh passkey and open a 60-second window.
         if ble_hid::OPEN_PAIRING_REQUESTED.swap(false, Ordering::Relaxed) {
             passkey = open_fresh_pairing_window(&mut pairing_open, &mut pairing_auto_close_at);
-            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp, disp);
+            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
             display::show_pin(disp, &sb, passkey, connected);
         }
 
         let btn_event = buttons.poll();
         if btn_event.is_some() || (!screen_on && buttons.is_any_down()) {
-            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp, disp);
+            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
         }
         match btn_event {
             Some(ButtonEvent::ALongPress) => {
@@ -365,7 +359,7 @@ where
 
         // CLI-driven delete request: remove a single fingerprint template from the sensor.
         if let Ok(request) = delete_rx.try_recv() {
-            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp, disp);
+            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
             display::show_status_2line(disp, &sb, "Deleting", &format!("slot {}", request.slot));
             fp.wake();
             let success = fp.delete_template(request.slot, 1);
@@ -382,7 +376,7 @@ where
 
         // CLI-driven enrollment: pick up a pending EnrollRequest from the CLI task.
         if let Ok(request) = enroll_rx.try_recv() {
-            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp, disp);
+            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
             const PASSES: u8 = 3;
             display::show_status_2line(disp, &sb, "Place finger", &format!("pass 1/{}", PASSES));
             if fp.begin_enroll(request.slot, PASSES) {
@@ -455,7 +449,7 @@ where
 
         // CLI-driven fingerprint verify: pick up a pending VerifyRequest from the CLI task.
         if let Ok(request) = verify_rx.try_recv() {
-            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp, disp);
+            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
             display::show_status_2line(disp, &sb, "CLI Auth", "Place finger");
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             let matched = loop {
@@ -483,7 +477,7 @@ where
         // Fingerprint — non-blocking poll; blocks ~20 ms only when a finger is detected.
         match fp.poll() {
             Some(fingerprint::IdentifyResult::Match(id)) => {
-                wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp, disp);
+                wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
 
                 let mut secret_buf = [0u8; 65];
                 let mut label_buf = [0u8; 257]; // labels stored up to 256 bytes
@@ -535,7 +529,7 @@ where
                 restore_idle_screen(disp, &sb, connected, pairing_open, passkey);
             }
             Some(fingerprint::IdentifyResult::NoMatch) => {
-                wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp, disp);
+                wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
                 display::show_no_match(disp, &sb);
                 FreeRtos::delay_ms(2000);
                 restore_idle_screen(disp, &sb, connected, pairing_open, passkey);
@@ -548,8 +542,6 @@ where
             backlight.set_low().ok();
             screen_on = false;
             fp.standby();
-            // Put the display controller to sleep (SLPIN) to stop the SPI oscillator current draw.
-            disp.set_sleep_mode(true);
         }
 
         FreeRtos::delay_ms(if screen_on { POLL_MS } else { IDLE_POLL_MS });

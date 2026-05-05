@@ -24,7 +24,7 @@ use esp_idf_svc::{
     },
     sys::{
         esp_pm_config_esp32_t, esp_pm_configure, esp_sleep_enable_uart_wakeup, link_patches,
-        uart_port_t_UART_NUM_1, uart_set_wakeup_threshold,
+        uart_port_t_UART_NUM_0, uart_port_t_UART_NUM_1, uart_set_wakeup_threshold,
     },
 };
 use mipidsi::{
@@ -43,25 +43,6 @@ mod fingerprint;
 mod fonts;
 mod rtc;
 
-// Implement DisplayPower for any mipidsi::Display so app::run can send SLPIN/SLPOUT.
-// DI: mipidsi's internal Interface trait (implemented by SpiInterface).
-// M:  any Model (ST7789, ILI9341, …).
-// RST: OutputPin — mipidsi::NoPin satisfies this when no reset pin is wired to the driver.
-impl<DI, M, RST> display::DisplayPower for mipidsi::Display<DI, M, RST>
-where
-    DI: mipidsi::interface::Interface,
-    M: mipidsi::models::Model,
-    RST: embedded_hal::digital::OutputPin,
-{
-    fn set_sleep_mode(&mut self, sleeping: bool) {
-        let mut delay = esp_idf_svc::hal::delay::Delay::new_default();
-        if sleeping {
-            let _ = self.sleep(&mut delay);
-        } else {
-            let _ = self.wake(&mut delay);
-        }
-    }
-}
 
 fn main() -> anyhow::Result<()> {
     link_patches();
@@ -247,8 +228,18 @@ fn main() -> anyhow::Result<()> {
     FreeRtos::delay_ms(2000);
 
     unsafe {
+        // UART1 (Grove / fingerprint sensor): wakeup on autonomous wakeup packet.
         uart_set_wakeup_threshold(uart_port_t_UART_NUM_1, 3);
         esp_sleep_enable_uart_wakeup(uart_port_t_UART_NUM_1 as i32);
+
+        // UART0 (USB-C / CLI): the driver holds an ESP_PM_APB_FREQ_MAX lock while
+        // installed, which normally blocks light sleep entirely.  Registering UART0
+        // as a wakeup source releases that lock so the PM driver can enter light
+        // sleep between CLI commands.  The first byte of an incoming command may be
+        // partially lost (start bit + up to 2 data bits), but the JSON framing means
+        // the command will simply be rejected and the user can resend it.
+        uart_set_wakeup_threshold(uart_port_t_UART_NUM_0, 3);
+        esp_sleep_enable_uart_wakeup(uart_port_t_UART_NUM_0 as i32);
     }
 
     // ------------------------------------------------------------------
