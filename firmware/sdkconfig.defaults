@@ -21,9 +21,19 @@ CONFIG_PM_DFS_INIT_AUTO=y
 
 # RUN_BLE_ON_SUSPEND is required: without it the BT controller holds a
 # NO_LIGHT_SLEEP lock permanently, making light sleep impossible regardless of
-# unicore mode.  Re-added to capture the exact crash backtrace so the
-# unicore+suspend incompatibility can be fixed rather than worked around.
+# unicore mode.
 CONFIG_BT_NIMBLE_RUN_BLE_ON_SUSPEND=y
+
+# BT modem sleep reduces BLE radio power between events (~20-25 mA saving).
+# ORIG mode (mode 1) is the only mode available on ESP32.
+# SLEEP_CLOCK_USE_MAIN_XTAL avoids the 32 kHz crystal requirement: the
+# ESP32-PICO on M5StickC Plus 2 has no external 32 kHz XTAL wired to the BT
+# controller, so without this flag the BTDM controller cannot find its sleep
+# clock and enters a crash/reboot loop.  The main 40 MHz XTAL divided internally
+# is slightly less accurate but fully functional.
+CONFIG_BT_CTRL_MODEM_SLEEP=y
+CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y
+CONFIG_BT_CTRL_SLEEP_CLOCK_USE_MAIN_XTAL=y
 
 # PM profiling: enables esp_pm_dump_locks() which logs every active PM lock.
 CONFIG_PM_PROFILING=y
