@@ -33,3 +33,11 @@ CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y
 # PM profiling: enables esp_pm_dump_locks() which logs every active PM lock.
 # Use this to identify what is preventing light sleep.
 CONFIG_PM_PROFILING=y
+
+# Single-core mode: disable APP_CPU (Core 1) and run everything on PRO_CPU (Core 0).
+# On ESP32, automatic light sleep via FreeRTOS tickless idle is only supported in
+# single-core mode.  In dual-core mode both cores must be simultaneously idle, which
+# never happens in practice with BLE and UART driver tasks — so light sleep never
+# fires despite being configured.  Unicore also saves ~10-15 mA by powering off
+# the second core entirely.
+CONFIG_FREERTOS_UNICORE=y
