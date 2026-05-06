@@ -623,6 +623,22 @@ where
             }
         }
 
-        FreeRtos::delay_ms(if screen_on { POLL_MS } else { IDLE_POLL_MS });
+        if screen_on {
+            FreeRtos::delay_ms(POLL_MS);
+        } else {
+            // FreeRTOS tickless idle requires every task to be blocked simultaneously,
+            // which doesn't happen reliably with the NimBLE host task and UART driver.
+            // Calling esp_light_sleep_start() directly from the main task is explicitly
+            // supported by ESP-IDF and bypasses the tickless idle preconditions entirely.
+            // Wakeup sources already registered at init: UART0 (CLI), UART1 (fingerprint),
+            // and the BLE connection timer (via CONFIG_BT_NIMBLE_RUN_BLE_ON_SUSPEND=y).
+            unsafe {
+                esp_idf_svc::sys::esp_sleep_enable_timer_wakeup(IDLE_POLL_MS as u64 * 1_000);
+                if esp_idf_svc::sys::esp_light_sleep_start() != esp_idf_svc::sys::ESP_OK {
+                    // Sleep was rejected by a NO_LIGHT_SLEEP lock; fall back to busy-wait.
+                    FreeRtos::delay_ms(IDLE_POLL_MS);
+                }
+            }
+        }
     }
 }
