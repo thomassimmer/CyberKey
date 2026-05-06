@@ -19,13 +19,11 @@ CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 CONFIG_PM_DFS_INIT_AUTO=y
 
-# BT_NIMBLE_RUN_BLE_ON_SUSPEND and BT_CTRL_MODEM_SLEEP are both disabled.
-# Together with FREERTOS_UNICORE they caused a hard crash loop in the BTDM
-# controller init (~160 mA average, device never reaches app_main).
-# With UNICORE, when BLE is not connected light sleep fires freely and drops
-# current to ~1 mA.  When BLE is connected the BLE stack holds NO_LIGHT_SLEEP
-# so current rises to ~35 mA — still much better than the 75 mA dual-core
-# baseline.  Both options can be revisited once stable unicore boot is confirmed.
+# RUN_BLE_ON_SUSPEND is required: without it the BT controller holds a
+# NO_LIGHT_SLEEP lock permanently, making light sleep impossible regardless of
+# unicore mode.  Re-added to capture the exact crash backtrace so the
+# unicore+suspend incompatibility can be fixed rather than worked around.
+CONFIG_BT_NIMBLE_RUN_BLE_ON_SUSPEND=y
 
 # PM profiling: enables esp_pm_dump_locks() which logs every active PM lock.
 CONFIG_PM_PROFILING=y
