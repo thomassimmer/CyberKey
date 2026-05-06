@@ -633,10 +633,17 @@ where
             // Wakeup sources already registered at init: UART0 (CLI), UART1 (fingerprint),
             // and the BLE connection timer (via CONFIG_BT_NIMBLE_RUN_BLE_ON_SUSPEND=y).
             unsafe {
+                let before_us = esp_idf_svc::sys::esp_timer_get_time();
                 esp_idf_svc::sys::esp_sleep_enable_timer_wakeup(IDLE_POLL_MS as u64 * 1_000);
-                if esp_idf_svc::sys::esp_light_sleep_start() != esp_idf_svc::sys::ESP_OK {
-                    // Sleep was rejected by a NO_LIGHT_SLEEP lock; fall back to busy-wait.
-                    FreeRtos::delay_ms(IDLE_POLL_MS);
+                // Ignore the return value: both success and rejection are handled below.
+                let _ = esp_idf_svc::sys::esp_light_sleep_start();
+                // Guarantee the minimum poll interval even when sleep is cut short by a
+                // spurious wakeup (e.g. fingerprint sensor heartbeat on UART1) or rejected
+                // by a PM lock.  Without this the loop spins at full CPU speed.
+                let elapsed_ms =
+                    ((esp_idf_svc::sys::esp_timer_get_time() - before_us) / 1_000) as u32;
+                if elapsed_ms < IDLE_POLL_MS {
+                    FreeRtos::delay_ms(IDLE_POLL_MS - elapsed_ms);
                 }
             }
         }
