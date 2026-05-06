@@ -612,12 +612,14 @@ where
                         );
                     }
                 }
-                // Dump the PM lock table.  Output goes to UART0 (USB-C serial) via the log
-                // subsystem.  Look for lines like "APB_FREQ_MAX  HELD  bt_controller"  which
-                // reveal which drivers are preventing light sleep.
-                unsafe {
-                    esp_idf_svc::sys::esp_pm_dump_locks(core::ptr::null_mut());
-                }
+                // esp_pm_dump_locks() requires a valid C FILE* (passing NULL crashes via fprintf).
+                // On ESP32/newlib, stdout is not a simple global — skip the dump and rely on
+                // the mA figure above plus the boot-time PM log ("Light sleep: ENABLED/DISABLED").
+                // To see live lock events, run: idf.py monitor and filter for tag "pm".
+                log::info!(
+                    "[DIAG] heap_free_min={}B  (for PM lock dump: idf.py monitor | grep \" pm:\")",
+                    unsafe { esp_idf_svc::sys::esp_get_minimum_free_heap_size() }
+                );
             }
         }
 
