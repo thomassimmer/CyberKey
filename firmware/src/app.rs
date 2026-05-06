@@ -612,12 +612,12 @@ where
                         );
                     }
                 }
-                // esp_pm_dump_locks() requires a valid C FILE* (passing NULL crashes via fprintf).
-                // On ESP32/newlib, stdout is not a simple global — skip the dump and rely on
-                // the mA figure above plus the boot-time PM log ("Light sleep: ENABLED/DISABLED").
-                // To see live lock events, run: idf.py monitor and filter for tag "pm".
+                // PM lock tracing is enabled at VERBOSE level (see main.rs).
+                // To see which lock blocks light sleep:
+                //   cargo run --release 2>&1 | grep NO_LIGHT_SLEEP
+                // An "acquire NO_LIGHT_SLEEP" with no matching "release" is the culprit.
                 log::info!(
-                    "[DIAG] heap_free_min={}B  (for PM lock dump: idf.py monitor | grep \" pm:\")",
+                    "[DIAG] heap_free_min={}B",
                     unsafe { esp_idf_svc::sys::esp_get_minimum_free_heap_size() }
                 );
             }

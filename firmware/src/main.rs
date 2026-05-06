@@ -23,8 +23,9 @@ use esp_idf_svc::{
         units::Hertz,
     },
     sys::{
-        esp_pm_config_esp32_t, esp_pm_configure, esp_sleep_enable_uart_wakeup, link_patches,
-        uart_port_t_UART_NUM_0, uart_port_t_UART_NUM_1, uart_set_wakeup_threshold,
+        esp_log_level_set, esp_log_level_t_ESP_LOG_VERBOSE, esp_pm_config_esp32_t,
+        esp_pm_configure, esp_sleep_enable_uart_wakeup, link_patches, uart_port_t_UART_NUM_0,
+        uart_port_t_UART_NUM_1, uart_set_wakeup_threshold,
     },
 };
 use mipidsi::{
@@ -252,6 +253,13 @@ fn main() -> anyhow::Result<()> {
         PinDriver::input(peripherals.pins.gpio39)?,
         PinDriver::input(peripherals.pins.gpio35)?,
     );
+
+    // Enable verbose PM lock tracing so every acquire/release appears in the serial log.
+    // Filter with: espflash flash --monitor 2>&1 | grep "NO_LIGHT_SLEEP"
+    // A lock that is acquired but never released is what blocks light sleep.
+    unsafe {
+        esp_log_level_set(b"pm\0".as_ptr() as *const core::ffi::c_char, esp_log_level_t_ESP_LOG_VERBOSE);
+    }
 
     app::run(
         &ble,
