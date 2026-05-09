@@ -8,17 +8,14 @@
 //! In unit tests a `MockUart` backed by in-memory buffers is used instead —
 //! no hardware required.
 //!
-//! All public methods except [`Fingerprint2Driver::poll_event`] are **blocking**:
-//! they spin internally (up to `READ_TIMEOUT_MS` = 500 times, 1 ms each) waiting
-//! for each byte.
-//! `poll_event` is the single non-blocking method and returns
-//! `Err(nb::Error::WouldBlock)` immediately when no data is available.
+//! All public methods are **blocking**: they spin internally (up to
+//! `READ_TIMEOUT_MS` = 500 times, 1 ms each) waiting for each byte.
 
 use heapless::Vec;
 
 use crate::commands::{
-    LedColor, LedMode, PS_ACTIVATE, PS_AUTO_IDENTIFY, PS_CONTROL_BLN, PS_DELET_CHAR, PS_GEN_CHAR,
-    PS_GET_ENROLL_IMAGE, PS_HANDSHAKE, PS_REG_MODEL, PS_SEARCH, PS_STORE_CHAR,
+    PS_ACTIVATE, PS_AUTO_IDENTIFY, PS_DELET_CHAR, PS_GEN_CHAR, PS_GET_ENROLL_IMAGE, PS_HANDSHAKE,
+    PS_REG_MODEL, PS_SEARCH, PS_STORE_CHAR,
 };
 use crate::error::FingerprintError;
 use crate::packet::{self, DEFAULT_ADDR, Frame, MAX_DATA_LEN, PacketType};
@@ -41,25 +38,6 @@ pub const READ_TIMEOUT_FLASH_MS: u32 = 3000;
 const MAX_FRAME_SIZE: usize = 9 + MAX_DATA_LEN + 2;
 
 // ---------------------------------------------------------------------------
-// DriverEvent
-// ---------------------------------------------------------------------------
-
-/// Events returned by [`Fingerprint2Driver::poll_event`].
-#[derive(Debug, PartialEq)]
-pub enum DriverEvent {
-    /// The sensor woke autonomously (a finger was placed on the pad).
-    ///
-    /// Call [`Fingerprint2Driver::auto_identify`] next to identify the finger.
-    Wakeup,
-
-    /// An unsolicited ACK frame arrived (uncommon; captured for diagnostics).
-    Ack {
-        confirm: u8,
-        data: heapless::Vec<u8, { crate::packet::MAX_DATA_LEN }>,
-    },
-}
-
-// ---------------------------------------------------------------------------
 // Fingerprint2Driver
 // ---------------------------------------------------------------------------
 
@@ -71,8 +49,7 @@ pub enum DriverEvent {
 ///
 /// `DELAY` must implement [`embedded_hal::delay::DelayNs`]. On each
 /// `WouldBlock` in `read_byte` the driver calls `delay.delay_ms(1)`, which
-/// yields to the FreeRTOS scheduler instead of spinning and allows light sleep
-/// to engage between retries.
+/// yields to the FreeRTOS scheduler instead of spinning.
 pub struct Fingerprint2Driver<UART, DELAY> {
     /// The underlying UART peripheral (or mock in tests).
     uart: UART,
@@ -309,19 +286,6 @@ where
         }
     }
 
-    /// Convert a codec error (which uses `Infallible` as the UART error) into
-    /// the driver's generic [`FingerprintError<E>`].
-    ///
-    /// `packet::deserialize` only ever returns `BadFrame` or `BadChecksum`;
-    /// all other variants hit `unreachable!`.
-    fn convert_codec_err(e: FingerprintError<core::convert::Infallible>) -> FingerprintError<E> {
-        match e {
-            FingerprintError::BadFrame => FingerprintError::BadFrame,
-            FingerprintError::BadChecksum => FingerprintError::BadChecksum,
-            _ => unreachable!("packet::deserialize only returns BadFrame or BadChecksum"),
-        }
-    }
-
     // =======================================================================
     // Public API
     // =======================================================================
@@ -395,25 +359,6 @@ where
             }
             // Intermediate stage (LEGAL_CHECK, GET_IMAGE) — keep reading.
         }
-    }
-
-    /// Control the RGB LED ring.
-    ///
-    /// # Parameters
-    ///
-    /// - `mode` — animation style (breathing, flashing, solid on/off, etc.).
-    /// - `color` — LED colour.
-    /// - `loops` — number of animation cycles; `0` usually means infinite.
-    pub fn set_led(
-        &mut self,
-        mode: LedMode,
-        color: LedColor,
-        loops: u8,
-    ) -> Result<(), FingerprintError<E>> {
-        // DATA payload: [Opcode, Mode, StartColor, EndColor, LoopCount]
-        self.send_command(&[PS_CONTROL_BLN, mode as u8, color as u8, color as u8, loops])?;
-        self.read_ack()?;
-        Ok(())
     }
 
     /// Check if a finger is currently on the pad (useful for active polling).
@@ -537,84 +482,6 @@ where
         self.read_ack()?;
         Ok(())
     }
-
-    /// Set the sleep timeout in seconds (10-254).
-    pub fn set_sleep_time(&mut self, seconds: u8) -> Result<(), FingerprintError<E>> {
-        self.send_command(&[crate::commands::PS_SET_SLEEP_TIME, seconds])?;
-        self.read_ack()?;
-        Ok(())
-    }
-
-    /// Poll for an unsolicited incoming frame — **non-blocking**.
-    ///
-    /// - Returns `Ok(DriverEvent::Wakeup)` when the sensor's 12-byte autonomous
-    ///   wakeup sequence is received (finger placed on pad).
-    /// - Returns `Ok(DriverEvent::Ack { confirm })` for any other unsolicited
-    ///   ACK frame.
-    /// - Returns `Err(nb::Error::WouldBlock)` **immediately** when no byte is
-    ///   available, so the firmware main-loop can sleep or handle BLE events
-    ///   between polls without spinning.
-    pub fn poll_event(&mut self) -> nb::Result<DriverEvent, FingerprintError<E>> {
-        // Step 1 ─ non-blocking read of the very first byte.
-        // If the rx buffer is empty we return WouldBlock immediately.
-        let b0 = match embedded_hal_nb::serial::Read::read(&mut self.uart) {
-            Ok(b) => b,
-            Err(nb::Error::WouldBlock) => return Err(nb::Error::WouldBlock),
-            Err(nb::Error::Other(e)) => return Err(nb::Error::Other(FingerprintError::Uart(e))),
-        };
-
-        // Step 2 ─ we are now committed to reading a full frame.
-        // Read 11 more bytes (blocking, with timeout) to fill a 12-byte window.
-        // This covers the wakeup packet and every minimal ACK frame.
-        let mut buf12 = [0u8; 12];
-        buf12[0] = b0;
-        for slot in &mut buf12[1..] {
-            *slot = self.read_byte().map_err(nb::Error::Other)?;
-        }
-
-        // Step 3 ─ wakeup check comes FIRST, before any other parsing.
-        if packet::is_wakeup_packet(&buf12) {
-            return Ok(DriverEvent::Wakeup);
-        }
-
-        // Step 4 ─ not a wakeup; validate magic bytes.
-        if buf12[0] != 0xEF || buf12[1] != 0x01 {
-            return Err(nb::Error::Other(FingerprintError::BadFrame));
-        }
-
-        // Step 5 ─ determine the total frame length from the LEN field.
-        let len_field = u16::from_be_bytes([buf12[7], buf12[8]]) as usize;
-        if len_field < 2 {
-            return Err(nb::Error::Other(FingerprintError::BadFrame));
-        }
-        let total = 9 + len_field; // header(9) + data + checksum
-        if total > MAX_FRAME_SIZE {
-            return Err(nb::Error::Other(FingerprintError::BadFrame));
-        }
-
-        // Step 6 ─ assemble the complete frame in a stack buffer.
-        let mut frame_buf = [0u8; MAX_FRAME_SIZE];
-        if total <= 12 {
-            // We already have all the bytes we need.
-            frame_buf[..total].copy_from_slice(&buf12[..total]);
-        } else {
-            // Need more bytes beyond the initial 12.
-            frame_buf[..12].copy_from_slice(&buf12);
-            for slot in &mut frame_buf[12..total] {
-                *slot = self.read_byte().map_err(nb::Error::Other)?;
-            }
-        }
-
-        // Step 7 ─ parse and validate via the packet codec.
-        let frame = packet::deserialize(&frame_buf[..total])
-            .map_err(|e| nb::Error::Other(Self::convert_codec_err(e)))?;
-
-        let confirm = frame.data.first().copied().unwrap_or(0);
-        Ok(DriverEvent::Ack {
-            confirm,
-            data: frame.data,
-        })
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -639,8 +506,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::commands::{LedColor, LedMode};
-    use crate::commands::{PS_CONTROL_BLN, PS_DELET_CHAR, PS_HANDSHAKE};
+    use crate::commands::{PS_DELET_CHAR, PS_HANDSHAKE};
     use crate::packet::{self, DEFAULT_ADDR, Frame, MAX_DATA_LEN, PacketType};
 
     // =========================================================================
@@ -785,27 +651,6 @@ mod tests {
     }
 
     // =========================================================================
-    // set_led
-    // =========================================================================
-
-    /// Verifies the PS_CONTROL_BLN opcode and the correct mode/color/loops bytes
-    /// are emitted into tx.
-    #[test]
-    fn set_led_encoding() {
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x00])), NoopDelay);
-
-        driver
-            .set_led(LedMode::Breathing, LedColor::Blue, 3)
-            .unwrap();
-
-        // DATA must be: [PS_CONTROL_BLN, Breathing=1, Blue=1, loops=3]
-        assert_eq!(
-            extract_tx_data(&driver.uart.tx),
-            vec![PS_CONTROL_BLN, 0x01, 0x01, 0x01, 0x03]
-        );
-    }
-
-    // =========================================================================
     // delete_template
     // =========================================================================
 
@@ -851,26 +696,5 @@ mod tests {
     fn unmapped_sensor_error_propagated() {
         let mut driver = Fingerprint2Driver::new(MockUart::with_rx(ack_bytes(&[0x15])), NoopDelay);
         assert_eq!(driver.handshake(), Err(FingerprintError::SensorError(0x15)));
-    }
-
-    // =========================================================================
-    // poll_event
-    // =========================================================================
-
-    /// Pre-loading the 12-byte wakeup sequence → Ok(DriverEvent::Wakeup).
-    #[test]
-    fn poll_event_wakeup() {
-        let wakeup = vec![
-            0xEF_u8, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x07, 0x00, 0x03, 0xFF, 0x01, 0x09,
-        ];
-        let mut driver = Fingerprint2Driver::new(MockUart::with_rx(wakeup), NoopDelay);
-        assert_eq!(driver.poll_event(), Ok(DriverEvent::Wakeup));
-    }
-
-    /// Empty rx → WouldBlock returned immediately (no retries, no timeout).
-    #[test]
-    fn poll_event_no_data() {
-        let mut driver = Fingerprint2Driver::new(MockUart::new(), NoopDelay);
-        assert_eq!(driver.poll_event(), Err(nb::Error::WouldBlock));
     }
 }

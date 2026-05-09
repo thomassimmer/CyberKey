@@ -35,20 +35,6 @@ pub const MAX_DATA_LEN: usize = 64;
 /// 2 (magic) + 4 (addr) + 1 (type) + 2 (len) + 0 (data) + 2 (csum) = 11
 pub const MIN_FRAME_LEN: usize = 11;
 
-/// The fixed 12-byte sequence the sensor emits autonomously when a finger is
-/// placed on the pad ("wakeup packet").
-///
-/// ```text
-/// EF 01 FF FF FF FF 07 00 03 FF 01 09
-/// ```
-///
-/// Checksum derivation:
-///   TYPE=0x07, LEN=0x0003, DATA=[0xFF]
-///   CSUM = (0x07 + 0x03 + 0xFF) & 0xFFFF = 265 = 0x0109
-const WAKEUP_BYTES: [u8; 12] = [
-    0xEF, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x07, 0x00, 0x03, 0xFF, 0x01, 0x09,
-];
-
 // ---------------------------------------------------------------------------
 // PacketType
 // ---------------------------------------------------------------------------
@@ -219,15 +205,6 @@ pub fn deserialize(buf: &[u8]) -> Result<Frame, FingerprintError<core::convert::
     })
 }
 
-/// Returns `true` if and only if `buf` exactly matches the 12-byte autonomous
-/// wakeup sequence (`EF 01 FF FF FF FF 07 00 03 FF 01 09`).
-///
-/// This check is performed *before* any other frame parsing because the sensor
-/// can emit the wakeup packet at any time without a preceding command.
-pub fn is_wakeup_packet(buf: &[u8]) -> bool {
-    buf == WAKEUP_BYTES
-}
-
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
@@ -320,36 +297,6 @@ mod tests {
 
         buf[n - 1] ^= 0xFF; // flip all bits of the low checksum byte
         assert_eq!(deserialize(&buf[..n]), Err(FingerprintError::BadChecksum));
-    }
-
-    // ------------------------------------------------------------------
-    // Wakeup packet detection
-    // ------------------------------------------------------------------
-
-    /// The exact wakeup sequence must be recognised.
-    #[test]
-    fn wakeup_packet_true() {
-        let wakeup = [
-            0xEF_u8, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x07, 0x00, 0x03, 0xFF, 0x01, 0x09,
-        ];
-        assert!(is_wakeup_packet(&wakeup));
-    }
-
-    /// A valid (but non-wakeup) ACK frame must not be mistaken for a wakeup.
-    #[test]
-    fn wakeup_packet_false_on_normal_ack() {
-        // Handshake success ACK: DATA = [0x00]
-        // TYPE=0x07, LEN=0x0003, DATA=[0x00], CSUM=(7+3+0)=10=0x000A
-        let ack = [
-            0xEF_u8, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x07, 0x00, 0x03, 0x00, 0x00, 0x0A,
-        ];
-        assert!(!is_wakeup_packet(&ack));
-    }
-
-    /// A slice shorter than 12 bytes must return false without panicking.
-    #[test]
-    fn wakeup_packet_false_on_short_slice() {
-        assert!(!is_wakeup_packet(&[0xEF, 0x01, 0xFF, 0xFF]));
     }
 
     // ------------------------------------------------------------------

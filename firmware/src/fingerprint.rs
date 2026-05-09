@@ -39,10 +39,7 @@ use esp_idf_svc::hal::{
     uart::{config::Config as UartConfig, Uart, UartDriver},
     units::Hertz,
 };
-use fingerprint2_rs::{
-    commands::{LedColor, LedMode},
-    DriverEvent, Fingerprint2Driver, FingerprintError,
-};
+use fingerprint2_rs::{Fingerprint2Driver, FingerprintError};
 
 const BAUD: u32 = 115_200;
 const SECURITY_LEVEL: u8 = 3;
@@ -151,7 +148,6 @@ impl EnrollSession {
 pub struct FingerprintSensor<'d> {
     driver: Fingerprint2Driver<UartDriver<'d>, FreeRtos>,
     ready: bool,
-    smart_poll_until: Option<std::time::Instant>,
     /// Active enrollment session, if one is in progress.
     enroll_session: Option<EnrollSession>,
 }
@@ -174,16 +170,12 @@ impl<'d> FingerprintSensor<'d> {
         Ok(Self {
             driver: Fingerprint2Driver::new(uart_driver, FreeRtos),
             ready: false,
-            smart_poll_until: None,
             enroll_session: None,
         })
     }
 
     /// Drain pending RX bytes, send `activate`, and wait 100 ms for the sensor's
     /// UART to settle before sending the next command.
-    ///
-    /// Must be called before any command sequence that follows an idle/sleep
-    /// period, or after the sensor has returned to autonomous wakeup mode.
     fn reactivate_sensor(&mut self, ctx: &str) {
         // Safety: drain_rx is safe to call as long as self.driver.uart is valid.
         // If the UART handle has been moved or dropped elsewhere, this will panic.
@@ -197,17 +189,11 @@ impl<'d> FingerprintSensor<'d> {
     /// Initialise the sensor: drain RX → activate → handshake.
     pub fn init(&mut self) -> bool {
         self.reactivate_sensor("init");
-        // Ensure we start in Active Mode (1) and LEDs are enabled.
-        let _ = self.driver.set_work_mode(1);
         log::info!("Fingerprint: handshake...");
         match self.driver.handshake() {
             Ok(()) => {
                 self.ready = true;
-                // Sensor is awake and listening on UART — arm smart poll immediately
-                // so fingers are detected right away instead of waiting for autonomous sleep/wakeup cycle (~10s).
-                self.smart_poll_until =
-                    Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
-                log::info!("Fingerprint: sensor online, smart poll armed for 10s");
+                log::info!("Fingerprint: sensor online");
                 true
             }
             Err(e) => {
@@ -466,60 +452,9 @@ impl<'d> FingerprintSensor<'d> {
         }
     }
 
-    /// Re-arm the sensor for autonomous finger detection.
-    ///
-    /// Call after enrollment or after any sequence that leaves the sensor in
-    /// a non-autonomous state. Mirrors what `begin_enroll` does up-front.
+    /// Re-arm the sensor for finger detection after enrollment or delete.
     pub fn reactivate(&mut self) {
         self.driver.drain_rx();
-        // Ensure we are in Active Mode (1) before starting the smart poll window.
-        let _ = self.driver.set_work_mode(1);
-        // Skip activate() (which keeps the sensor awake but deaf for ~10s) and go straight
-        // to a smart-poll window so a freshly enrolled finger can be tested immediately.
-        self.smart_poll_until =
-            Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
-        log::info!("fp: reactivate -> smart poll armed for 10s after enrollment");
-    }
-
-    /// Put the sensor into a low-power standby state.
-    ///
-    /// Enables "Timed Sleep" mode (automatic sleep after 10s of inactivity).
-    pub fn standby(&mut self) {
-        if !self.ready {
-            return;
-        }
-        log::info!("fp: entering standby");
-        self.smart_poll_until = None;
-
-        self.driver.drain_rx();
-        let _ = self.driver.set_work_mode(0); // 0 = Timed Sleep
-        let _ = self.driver.set_sleep_time(10);
-    }
-
-    /// Wake the sensor from standby or refresh the active polling window.
-    pub fn wake(&mut self) {
-        if !self.ready {
-            return;
-        }
-
-        // If already polling and we have more than 5 seconds left, just keep going
-        // to avoid redundant UART traffic on every button press.
-        if let Some(until) = self.smart_poll_until {
-            if until > std::time::Instant::now() + std::time::Duration::from_secs(5) {
-                return;
-            }
-        }
-
-        log::info!("fp: waking up / refreshing poll window");
-        self.driver.drain_rx();
-
-        // Switch back to "Active Mode" (always-on, ready for commands).
-        let _ = self.driver.set_work_mode(1);
-        // Restore default idle LED (Blue breathing).
-        let _ = self.driver.set_led(LedMode::Breathing, LedColor::Blue, 0);
-
-        self.smart_poll_until =
-            Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
     }
 
     fn execute_auto_identify(&mut self, via: &str) -> Option<IdentifyResult> {
@@ -543,67 +478,22 @@ impl<'d> FingerprintSensor<'d> {
             }
         };
 
-        // The sensor drives its result LED (green/red) autonomously; no need to force it off.
-        // main.rs delays 2 s after this call, so the LED stays visible long enough.
-
-        // Arm smart polling for the next 30 seconds
-        self.smart_poll_until =
-            Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
-        log::info!("fp: smart poll window start (30s)");
-
         result
     }
 
     /// Non-blocking poll. Returns Some(result) when a finger was placed and identified.
     ///
-    /// Returns None immediately when no finger is on the pad (WouldBlock).
+    /// Returns None immediately when no finger is on the pad.
     pub fn poll(&mut self) -> Option<IdentifyResult> {
         if !self.ready {
             return None;
         }
-
-        // 1. SMART POLLING WINDOW (if active)
-        if let Some(until) = self.smart_poll_until {
-            if std::time::Instant::now() > until {
-                // Window expired — transition to Timed Sleep (mode 0) so the sensor
-                // can eventually sleep and trigger a Wakeup event on touch.
-                self.smart_poll_until = None;
-                log::info!("fp: smart poll window expired, entering Timed Sleep");
-                let _ = self.driver.set_work_mode(0);
-                let _ = self.driver.set_sleep_time(10);
-            } else {
-                self.driver.drain_rx();
-                match self.driver.get_image() {
-                    Ok(()) => {
-                        log::info!("fp: smart poll -> finger detected");
-                        return self.execute_auto_identify("smart_poll");
-                    }
-                    Err(FingerprintError::SensorError(2)) => {
-                        // No finger — keep polling silently
-                        return None;
-                    }
-                    Err(e) => {
-                        log::warn!("fp: Smart Polling err {:?}", e);
-                        return None;
-                    }
-                }
-            }
-        }
-
-        // 2. AUTONOMOUS WAKEUP
-        match self.driver.poll_event() {
-            Ok(DriverEvent::Wakeup) => {
-                log::info!("fp: autonomous wakeup");
-                FreeRtos::delay_ms(100);
-                self.execute_auto_identify("wakeup")
-            }
-            Ok(DriverEvent::Ack { confirm, .. }) => {
-                log::info!("fp: unsolicited ack confirm=0x{:02X}", confirm);
-                None
-            }
-            Err(nb::Error::WouldBlock) => None,
-            Err(nb::Error::Other(e)) => {
-                log::warn!("fp poll error: {:?}", e);
+        self.driver.drain_rx();
+        match self.driver.get_image() {
+            Ok(()) => self.execute_auto_identify("poll"),
+            Err(FingerprintError::SensorError(2)) => None, // No finger present
+            Err(e) => {
+                log::warn!("fp: poll error {:?}", e);
                 None
             }
         }

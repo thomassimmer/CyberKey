@@ -142,5 +142,5 @@ cargo run --release   # builds, flashes, and opens serial monitor
 | CLI end-to-end | No automated serial loopback tests | Would require a hardware-in-the-loop setup |
 | BLE pairing | Manual only | No emulated BLE host |
 | NVS encryption | Not directly tested | Tested implicitly by add/list/remove on a flashed device |
-| Power management | Manual only | Light sleep behavior requires oscilloscope to verify current draw |
+| Power management | Manual only | Current draw requires a multimeter to verify |
 | Long-press timing | Not unit-tested | Threshold (1.5 s) is a constant; test would be a tautology |

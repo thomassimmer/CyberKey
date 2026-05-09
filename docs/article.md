@@ -46,7 +46,7 @@ The order matters. Initializing the display controller before completing its har
 
 After initialization, the firmware runs a loop that never exits. It checks the buttons, handles BLE events, listens for fingerprint matches, updates the display, reads the battery level. This is the event loop you write yourself.
 
-One thing that has no equivalent in web development is power management. The ESP32 can enter a **light sleep** state between iterations: the CPU halts, power consumption drops from ~80 mA to under 1 mA, and the device wakes up automatically when something happens, a button press or a byte arriving on UART. The CPU is asleep most of the time and only does work when there's something to do.
+One thing that has no equivalent in web development is power management. A device running on a 200 mAh battery drains fast, and every component you leave running costs you runtime. The ESP32 has sleep modes that should bring power down dramatically between uses. I spent a fair amount of time trying to make them work — and couldn't. For reasons I never fully pinned down, the chip never actually slept. The simplest solution that did work: pressing button C cuts power entirely by driving a GPIO low. The board shuts off instantly, draws nothing, and reconnects to bonded hosts automatically in a few seconds on next boot.
 
 ---
 
@@ -90,7 +90,7 @@ The risk I ran into: moving too fast. At several points I implemented something 
 
 The device works. Place an enrolled finger, the sensor matches it, the TOTP code appears on the screen and is typed over Bluetooth in under a second. BLE pairing, the display, the real-time clock, the USB CLI: all of it functions as intended. For a first embedded project, I'm happy with where it landed.
 
-The one disappointment is battery life. The fingerprint sensor draws 14 mA continuously, and I found no way to cut its power between uses on the Grove port. That single component dominates the idle power budget and caps standby time at around 13 hours. Switching the ESP32 to deep sleep would save almost nothing since the sensor would still be on. Fixing it properly probably requires a different wiring approach with a GPIO-controlled power switch. That's the next version.
+The one disappointment is battery life. With a 200 mAh battery, the device lasts around 3–4 hours. I tried a lot of things to improve that — sleep modes, sensor standby, various combinations, and none of it moved the needle in any meaningful way. I never fully understood why. For now, the pragmatic solution is a hard power-off: one press of button C cuts all power at the hardware level, and the device reconnects to bonded hosts automatically on next boot. Not elegant, but honest. If you have an idea that doesn't require hardware changes, I'd genuinely love to see a pull request.
 
 If I did this again, I'd take more time upfront to understand the core concepts before writing any code. The moments where I got stuck hardest were always the moments where I had skipped the fundamentals. I'd also add logs from the very beginning, debugging embedded hardware without them means staring at a silent device and guessing.
 

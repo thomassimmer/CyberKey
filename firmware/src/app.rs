@@ -1,4 +1,4 @@
-//! Main event loop — BLE state, buttons, fingerprint, enrollment, screen timeout.
+//! Main event loop — BLE state, buttons, fingerprint, enrollment.
 
 use std::sync::{atomic::Ordering, Arc, Mutex};
 
@@ -97,26 +97,6 @@ fn check_boot_factory_reset<D, A, B, C>(
     }
 }
 
-/// Wake the screen if it is off, resetting the inactivity counter.
-///
-/// Centralises the repeated "ensure screen is on" pattern used throughout the
-/// main event loop (button press, BLE event, fingerprint result, CLI request…).
-fn wake_screen_if_off<BL: OutputPin>(
-    screen_on: &mut bool,
-    inactivity_ticks: &mut u32,
-    backlight: &mut PinDriver<'_, BL, Output>,
-    fp: &mut fingerprint::FingerprintSensor<'_>,
-) {
-    *inactivity_ticks = 0;
-    if !*screen_on {
-        backlight.set_high().ok();
-        *screen_on = true;
-    }
-    // Always ensure the sensor is in Active Mode and polling when there is activity.
-    // fp.wake() is optimized to skip redundant UART traffic if already polling.
-    fp.wake();
-}
-
 /// Restore the main idle screen after any action that temporarily takes over the display.
 ///
 /// Shows the active-clients count, the pairing PIN, or the "Press B to pair" prompt
@@ -153,13 +133,12 @@ fn open_fresh_pairing_window(pairing_open: &mut bool, pairing_auto_close_at: &mu
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn run<D, A, B, C, P, BL, F>(
+pub fn run<D, A, B, C, P, F>(
     ble: &ble_hid::BleHid,
     disp: &mut D,
     mut buttons: crate::buttons::Buttons<'_, A, B, C>,
     mut passkey: u32,
     mut power_pin: PinDriver<'_, P, Output>,
-    mut backlight: PinDriver<'_, BL, Output>,
     fp: &mut fingerprint::FingerprintSensor<'_>,
     nvs: Arc<Mutex<config_store::SharedNvs>>,
     enroll_rx: std::sync::mpsc::Receiver<cli::EnrollRequest>,
@@ -174,7 +153,6 @@ where
     B: InputPin,
     C: InputPin,
     P: OutputPin,
-    BL: OutputPin,
     F: FnMut() -> Option<u8>,
 {
     let mut last_connected = 0u32;
@@ -184,11 +162,6 @@ where
     let mut last_battery_tick: u32 = 0;
     let mut last_minute: u8 = 255; // force topbar draw on first iteration
     let mut tick: u32 = 0;
-
-    const SCREEN_TIMEOUT_TICKS: u32 = 1_500; // 30 s at POLL_MS/tick
-    const IDLE_POLL_MS: u32 = 100; // sleep interval when screen is off
-    let mut inactivity_ticks: u32 = 0;
-    let mut screen_on = true;
 
     let sb_boot = display::StatusBar::unknown();
     check_boot_factory_reset(&buttons, disp, &sb_boot, fp, &nvs);
@@ -281,14 +254,10 @@ where
         // CLI allow_pairing: generate a fresh passkey and open a 60-second window.
         if ble_hid::OPEN_PAIRING_REQUESTED.swap(false, Ordering::Relaxed) {
             passkey = open_fresh_pairing_window(&mut pairing_open, &mut pairing_auto_close_at);
-            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
             display::show_pin(disp, &sb, passkey, connected);
         }
 
         let btn_event = buttons.poll();
-        if btn_event.is_some() || (!screen_on && buttons.is_any_down()) {
-            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
-        }
         match btn_event {
             Some(ButtonEvent::ALongPress) => {
                 if pending_bond_clear {
@@ -323,10 +292,10 @@ where
                     display::show_pin(disp, &sb, passkey, connected);
                 }
             }
-            Some(ButtonEvent::CPowerLongPress) => {
-                log::warn!("Powering off sequence initiated...");
+            Some(ButtonEvent::CShortPress) | Some(ButtonEvent::CPowerLongPress) => {
+                log::warn!("Powering off");
                 display::show_power_off(disp, &sb);
-                FreeRtos::delay_ms(1500);
+                FreeRtos::delay_ms(1000);
                 power_pin.set_low()?;
                 loop {
                     FreeRtos::delay_ms(100);
@@ -349,9 +318,7 @@ where
 
         // CLI-driven delete request: remove a single fingerprint template from the sensor.
         if let Ok(request) = delete_rx.try_recv() {
-            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
             display::show_status_2line(disp, &sb, "Deleting", &format!("slot {}", request.slot));
-            fp.wake();
             let success = fp.delete_template(request.slot, 1);
             let _ = request.reply.send(success);
             if success {
@@ -366,7 +333,6 @@ where
 
         // CLI-driven enrollment: pick up a pending EnrollRequest from the CLI task.
         if let Ok(request) = enroll_rx.try_recv() {
-            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
             const PASSES: u8 = 3;
             display::show_status_2line(disp, &sb, "Place finger", &format!("pass 1/{}", PASSES));
             if fp.begin_enroll(request.slot, PASSES) {
@@ -439,7 +405,6 @@ where
 
         // CLI-driven fingerprint verify: pick up a pending VerifyRequest from the CLI task.
         if let Ok(request) = verify_rx.try_recv() {
-            wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
             display::show_status_2line(disp, &sb, "CLI Auth", "Place finger");
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             let matched = loop {
@@ -467,8 +432,6 @@ where
         // Fingerprint — non-blocking poll; blocks ~20 ms only when a finger is detected.
         match fp.poll() {
             Some(fingerprint::IdentifyResult::Match(id)) => {
-                wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
-
                 let mut secret_buf = [0u8; 65];
                 let mut label_buf = [0u8; 257]; // labels stored up to 256 bytes
                 let (totp_result, label) = {
@@ -519,7 +482,6 @@ where
                 restore_idle_screen(disp, &sb, connected, pairing_open, passkey);
             }
             Some(fingerprint::IdentifyResult::NoMatch) => {
-                wake_screen_if_off(&mut screen_on, &mut inactivity_ticks, &mut backlight, fp);
                 display::show_no_match(disp, &sb);
                 FreeRtos::delay_ms(2000);
                 restore_idle_screen(disp, &sb, connected, pairing_open, passkey);
@@ -527,13 +489,6 @@ where
             None => {}
         }
 
-        inactivity_ticks = inactivity_ticks.saturating_add(1);
-        if screen_on && inactivity_ticks >= SCREEN_TIMEOUT_TICKS {
-            backlight.set_low().ok();
-            screen_on = false;
-            fp.standby();
-        }
-
-        FreeRtos::delay_ms(if screen_on { POLL_MS } else { IDLE_POLL_MS });
+        FreeRtos::delay_ms(POLL_MS);
     }
 }

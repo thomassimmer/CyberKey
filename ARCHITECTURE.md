@@ -16,8 +16,7 @@ No phone, no app, no network at authentication time.
 │  ├─ button polling                (FreeRTOS thread)      │
 │  ├─ fingerprint polling           │                      │
 │  ├─ BLE state + HID typing        └─ JSON/UART0 ─────────┼──→ USB-C
-│  ├─ display updates                                      │
-│  └─ light sleep management                               │
+│  └─ display updates                                      │
 │                                                          │
 │  NimBLE stack  ──────────────────────────────────────────┼──→ BLE
 │  NVS (AES-256-XTS, eFuse key) ─ TOTP secrets            │
@@ -64,7 +63,7 @@ The `no_std` split is intentional: all logic that can be tested on a laptop shou
 | NVS encrypted with eFuse key | Secrets survive extraction only with chip | [docs/storage.md](docs/storage.md) |
 | `heapless::Vec`, no allocator | No fragmentation over weeks of runtime | [docs/totp.md](docs/totp.md) |
 | Button polling, not interrupts | Simpler debounce and long-press logic | [docs/hardware.md](docs/hardware.md) |
-| Light sleep, not deep sleep | UART wakeup (simpler than GPIO edge wakeup) | [docs/hardware.md](docs/hardware.md) |
+| Power-off via GPIO4, not sleep | Sleep modes attempted but never worked reliably on this hw | [docs/hardware.md](docs/hardware.md) |
 | JSON over serial | Human-readable, debuggable with any terminal | [docs/cli-protocol.md](docs/cli-protocol.md) |
 | Numpad keycodes for digits | Layout-independent (works on AZERTY/QWERTY) | [docs/totp.md](docs/totp.md) |
 | Custom proportional Orbitron font | Cyberpunk aesthetic; proportional spacing vs. `embedded-graphics` fixed grid | [docs/custom-font.md](docs/custom-font.md) |
@@ -73,7 +72,7 @@ The `no_std` split is intentional: all logic that can be tested on a laptop shou
 
 ## Documentation Pages
 
-- **[docs/hardware.md](docs/hardware.md)** — GPIO map, peripherals, power budget, button polling, light sleep
+- **[docs/hardware.md](docs/hardware.md)** — GPIO map, peripherals, power budget, button polling, power-off strategy
 - **[docs/ble-security.md](docs/ble-security.md)** — NimBLE, LESC/MITM, pairing flow, bond persistence
 - **[docs/storage.md](docs/storage.md)** — NVS encryption, eFuse key, config layout, RTC persistence
 - **[docs/totp.md](docs/totp.md)** — RFC 6238 implementation, `no_std` choices, clock sync, HID keycode mapping

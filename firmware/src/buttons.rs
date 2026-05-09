@@ -18,6 +18,8 @@ pub enum ButtonEvent {
     AShortPress,
     BLongPress,
     BShortPress,
+    /// Button C short press → power off.
+    CShortPress,
     /// Button C (power) held ≥ 1.5 s → power off.
     CPowerLongPress,
 }
@@ -88,11 +90,6 @@ impl<'d, A: InputPin, B: InputPin, C: InputPin> Buttons<'d, A, B, C> {
         self.btn_a.is_low()
     }
 
-    /// Returns `true` if any button is currently pressed.
-    pub fn is_any_down(&self) -> bool {
-        self.btn_a.is_low() || self.btn_b.is_low() || self.btn_c.is_low()
-    }
-
     /// Call this every [`POLL_MS`] ms from the main loop.
     pub fn poll(&mut self) -> Option<ButtonEvent> {
         let a_down = self.btn_a.is_low();
@@ -113,8 +110,11 @@ impl<'d, A: InputPin, B: InputPin, C: InputPin> Buttons<'d, A, B, C> {
         ) {
             return Some(e);
         }
-        // Button C has no short-press action (power button).
-        self.state_c
-            .poll(c_down, ButtonEvent::CPowerLongPress, None)
+        // Button C: both short-press and long-press cut power.
+        self.state_c.poll(
+            c_down,
+            ButtonEvent::CPowerLongPress,
+            Some(ButtonEvent::CShortPress),
+        )
     }
 }

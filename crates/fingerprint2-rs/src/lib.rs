@@ -21,11 +21,10 @@
 //! # Quick start
 //!
 //! ```ignore
-//! use fingerprint2_rs::{Fingerprint2Driver, commands::{LedMode, LedColor}};
+//! use fingerprint2_rs::Fingerprint2Driver;
 //!
 //! let mut driver = Fingerprint2Driver::new(uart, delay);
 //! driver.handshake()?;
-//! driver.set_led(LedMode::Breathing, LedColor::Blue, 3)?;
 //! let (page_id, score) = driver.auto_identify(3)?;
 //! ```
 #![cfg_attr(not(test), no_std)]
@@ -35,5 +34,5 @@ pub mod driver;
 pub mod error;
 pub mod packet;
 
-pub use driver::{DriverEvent, Fingerprint2Driver};
+pub use driver::Fingerprint2Driver;
 pub use error::FingerprintError;

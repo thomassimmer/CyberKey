@@ -75,27 +75,18 @@ At 20 ms, the polling rate is faster than any deliberate human action. The compl
 
 ## Power Management
 
-### Budget
+### Current budget
 
-| State | ESP32 | Fingerprint sensor | Total | Notes |
-|-------|-------|--------------------|-------|-------|
-| Light sleep | ~0.8 mA | ~14 mA | ~15 mA | UART wakeup enabled |
-| Active (BLE + display) | ~80 mA | ~14 mA | ~95 mA | Brief bursts (~2 s) |
-| Charging | — | — | — | 500 mA max via USB-C |
+The device draws roughly **~50 mA** in normal operation (ESP32 with BLE active + fingerprint sensor + display). With a 200 mAh battery, that gives around 3–4 hours of runtime.
 
-**Battery: ~200 mAh.** At 15 mA idle, that is roughly 13 hours of standby.
+### Power-off strategy
 
-The fingerprint sensor cannot be put to sleep independently in the current hardware configuration (no GPIO power control on Grove). It consumes ~14 mA continuously and dominates the idle budget.
+Pressing button C drives GPIO4 (power hold) low. The M5StickC Plus 2 uses GPIO4 as a self-hold latch — once it goes low, the board cuts power immediately. This is a hardware power cut, not a sleep mode.
 
-### Light Sleep vs. Deep Sleep
+NVS bonds survive the power cut (stored in flash). On next boot the firmware reconnects to bonded hosts automatically without user interaction.
 
-The ESP32 has two low-power modes:
+### Contributing: improving battery life
 
-- **Light sleep**: CPU halts, RAM retained, peripherals optionally active. Wakeup sources include UART RX activity. Current: ~0.8 mA (ESP32 core alone).
-- **Deep sleep**: CPU + RAM off, only the RTC domain is active. Current: ~0.01 mA (ESP32 core alone). Wakeup is limited to GPIO edges, timers, and ULP programs — **not UART activity**.
+Several approaches were attempted to reduce idle current (ESP-IDF light sleep, fingerprint sensor standby, various combinations) but none produced meaningful results. The root cause was never fully isolated.
 
-**Why light sleep (not deep sleep)?**
-
-The fingerprint sensor sends a wakeup packet over UART1 when it detects a finger autonomously. That requires UART RX to remain active, which rules out deep sleep. Light sleep with UART wakeup is the simplest way to stay responsive to the sensor without burning full active-mode power between authentication attempts.
-
-Deep sleep would save ~0.8 mA on the ESP32 side, but the fingerprint sensor still draws 14 mA, making the net saving marginal (~5%). The added complexity (GPIO edge wakeup, state reconstruction after wake) is not worth it for v0.1.
+If you have an idea that doesn't require hardware modifications, pull requests are welcome.

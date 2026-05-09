@@ -51,11 +51,10 @@ Configuration (enrollment, clock sync, bond management) happens over USB-C seria
 ### During Normal Use
 | Action | Button | Effect |
 |--------|--------|--------|
-| **Wake Up** | Any button | Turns on the screen and activates the sensor. |
 | **TOTP** | Sensor | Place an enrolled finger — the service label and 6-digit code appear on the display, then the code is typed via BLE. |
 | **Pairing** | **Button B** (short) | Toggle the BLE pairing window (displays the PIN). |
 | **Clear Bonds** | **Button A** (1.5s) | Resets all Bluetooth pairings (hold again to confirm). |
-| **Power Off** | **Button C** (1.5s) | Shuts down the device. |
+| **Power Off** | **Button C** | Any press cuts power via GPIO. BLE bonds are preserved; the device reconnects automatically on next boot. |
 
 ### Recovery (at Boot)
 | Action | Button | Effect |

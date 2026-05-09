@@ -3,7 +3,7 @@
 //! BLE HID keyboard via esp32-nimble (NimBLE over ESP-IDF).
 //! The NimBLE host task runs inside FreeRTOS; `fn main()` is the user task.
 
-use std::{sync::atomic::Ordering, time::Duration};
+use std::sync::atomic::Ordering;
 
 use esp_idf_svc::{
     hal::{
@@ -22,10 +22,7 @@ use esp_idf_svc::{
         uart::{config::Config as UartConfig, UartDriver},
         units::Hertz,
     },
-    sys::{
-        esp_pm_config_esp32_t, esp_pm_configure, esp_sleep_enable_uart_wakeup, link_patches,
-        uart_port_t_UART_NUM_1, uart_set_wakeup_threshold,
-    },
+    sys::link_patches,
 };
 use mipidsi::{
     interface::SpiInterface,
@@ -54,12 +51,12 @@ fn main() -> anyhow::Result<()> {
     power_pin.set_high()?;
 
     unsafe {
-        let pm_cfg = esp_pm_config_esp32_t {
+        let pm_cfg = esp_idf_svc::sys::esp_pm_config_esp32_t {
             max_freq_mhz: 160,
-            min_freq_mhz: 80,
-            light_sleep_enable: true,
+            min_freq_mhz: 160,
+            light_sleep_enable: false,
         };
-        esp_pm_configure(&pm_cfg as *const _ as *const core::ffi::c_void);
+        esp_idf_svc::sys::esp_pm_configure(&pm_cfg as *const _ as *const core::ffi::c_void);
     }
 
     // Battery — GPIO38 / ADC1 with a ÷2 voltage divider (M5Unified: _adc_ratio = 2.0).
@@ -159,9 +156,9 @@ fn main() -> anyhow::Result<()> {
     // Hardware reset: RST low → 20 ms → high → 120 ms before mipidsi init.
     let mut rst = PinDriver::output(rst_pin)?;
     rst.set_low()?;
-    std::thread::sleep(Duration::from_millis(20));
+    FreeRtos::delay_ms(20);
     rst.set_high()?;
-    std::thread::sleep(Duration::from_millis(120));
+    FreeRtos::delay_ms(120);
 
     let spi_driver = SpiDriver::new(
         peripherals.spi2,
@@ -226,11 +223,6 @@ fn main() -> anyhow::Result<()> {
     }
     FreeRtos::delay_ms(2000);
 
-    unsafe {
-        uart_set_wakeup_threshold(uart_port_t_UART_NUM_1, 3);
-        esp_sleep_enable_uart_wakeup(uart_port_t_UART_NUM_1 as i32);
-    }
-
     // ------------------------------------------------------------------
     // Buttons — GPIO37 (A), GPIO39 (B), GPIO35 (C/power); active-low.
     // GPIO35/37/39 are input-only on ESP32 silicon (no internal pull resistors;
@@ -248,7 +240,6 @@ fn main() -> anyhow::Result<()> {
         buttons,
         passkey,
         power_pin,
-        backlight,
         &mut fp,
         nvs,
         enroll_rx,
